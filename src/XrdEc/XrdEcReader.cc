@@ -46,72 +46,14 @@
 
 namespace XrdEc
 {
-  //---------------------------------------------------------------------------
-  // OpenOnly operation (@see ZipOperation) - a private ZIP operation
-  //---------------------------------------------------------------------------
-  template<bool HasHndl>
-  class OpenOnlyImpl: public XrdCl::ZipOperation<OpenOnlyImpl, HasHndl,
-      XrdCl::Resp<void>, XrdCl::Arg<std::string>, XrdCl::Arg<bool>>
 
-  {
-    public:
-
-      //-----------------------------------------------------------------------
-      // Inherit constructors from FileOperation (@see FileOperation)
-      //-----------------------------------------------------------------------
-      using XrdCl::ZipOperation<OpenOnlyImpl, HasHndl, XrdCl::Resp<void>,
-          XrdCl::Arg<std::string>, XrdCl::Arg<bool>>::ZipOperation;
-
-      //-----------------------------------------------------------------------
-      // Argument indexes in the args tuple
-      //-----------------------------------------------------------------------
-      enum { UrlArg, UpdtArg };
-
-      //-----------------------------------------------------------------------
-      // @return : name of the operation (@see Operation)
-      //-----------------------------------------------------------------------
-      std::string ToString()
-      {
-        return "OpenOnly";
-      }
-
-    protected:
-
-      //-----------------------------------------------------------------------
-      // RunImpl operation (@see Operation)
-      //
-      // @param params :  container with parameters forwarded from
-      //                  previous operation
-      // @return       :  status of the operation
-      //-----------------------------------------------------------------------
-      XrdCl::XRootDStatus RunImpl( XrdCl::PipelineHandler *handler,
-                                   uint16_t                pipelineTimeout )
-      {
-        std::string      url     = std::get<UrlArg>( this->args ).Get();
-        bool             updt    = std::get<UpdtArg>( this->args ).Get();
-        uint16_t         timeout = pipelineTimeout < this->timeout ?
-                                   pipelineTimeout : this->timeout;
-        return this->zip->OpenOnly( url, updt, handler, timeout );
-      }
-  };
-
-  //---------------------------------------------------------------------------
-  // Factory for creating OpenArchiveImpl objects
-  //---------------------------------------------------------------------------
-  inline OpenOnlyImpl<false> OpenOnly( XrdCl::Ctx<XrdCl::ZipArchive> zip,
-                                       XrdCl::Arg<std::string>       fn,
-                                       XrdCl::Arg<bool>              updt,
-                                       uint16_t                      timeout = 0 )
-  {
-    return OpenOnlyImpl<false>( std::move( zip ), std::move( fn ),
-                                std::move( updt ) ).Timeout( timeout );
-  }
 
   //-------------------------------------------------------------------------
   // A single data block
   //-------------------------------------------------------------------------
-  struct block_t
+  /*struct block_t
   {
+	  friend class XrdEc::RepairTool;
     typedef std::tuple<uint64_t, uint32_t, char*, callback_t> args_t;
     typedef std::vector<args_t> pending_t;
 
@@ -412,7 +354,7 @@ namespace XrdEc
     size_t                  blkid;      //< block ID
     bool                    recovering; //< true if we are in the process of recovering data, false otherwise
     std::mutex              mtx;
-  };
+  };*/
 
   //---------------------------------------------------------------------------
   // Destructor (we need it in the source file because block_t is defined in
