@@ -29,6 +29,7 @@
 #include "XrdEc/XrdEcStrmWriter.hh"
 #include "XrdEc/XrdEcReader.hh"
 #include "XrdEc/XrdEcObjCfg.hh"
+#include "XrdEc/XrdEcRepairTool.hh"
 
 #include "XrdCl/XrdClMessageUtils.hh"
 
@@ -65,9 +66,13 @@ class MicroTest: public CppUnit::TestCase
       CPPUNIT_TEST( BigWriteTestIsalCrcNoMt );
       CPPUNIT_TEST( AlignedWrite1MissingTestIsalCrcNoMt );
       CPPUNIT_TEST( AlignedWrite2MissingTestIsalCrcNoMt );
+      CPPUNIT_TEST( AlignedRepairNoHostTest );
+      CPPUNIT_TEST( AlignedRepairOneChunkTest);
     CPPUNIT_TEST_SUITE_END();
 
     void Init( bool usecrc32c );
+
+    void InitRepair(bool usecrc32c);
 
     inline void AlignedWriteTestImpl( bool usecrc32c )
     {
@@ -76,7 +81,7 @@ class MicroTest: public CppUnit::TestCase
       // run the test
       AlignedWriteRaw();
       // verify that we wrote the data correctly
-      Verify();
+      Verify(true);
       // clean up the data directory
       CleanUp();
     }
@@ -96,7 +101,7 @@ class MicroTest: public CppUnit::TestCase
 
     	AlignedWriteRaw();
 
-    	Verify();
+    	Verify(false);
 
     	uint32_t seed = std::chrono::system_clock::now().time_since_epoch().count();
 
@@ -110,7 +115,7 @@ class MicroTest: public CppUnit::TestCase
 
 		AlignedWriteRaw();
 
-		Verify();
+		Verify(false);
 
 		uint32_t seed =
 				std::chrono::system_clock::now().time_since_epoch().count();
@@ -120,7 +125,42 @@ class MicroTest: public CppUnit::TestCase
 		CleanUp();
     }
 
-    inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
+    inline void AlignedRepairTestImpl(bool usecrc32c, bool unreachableHosts, bool byteFlip){
+    	std::cout<<"Repair Test started"<<std::flush;
+    	InitRepair(usecrc32c);
+    	if(unreachableHosts){
+		UrlNotReachable(2);
+		UrlNotReachable(3);
+    	}
+    	if(byteFlip){
+    		CorruptChunk(0, 0);
+    	}
+		// run the test
+		AlignedWriteRaw();
+
+		XrdEc::RepairTool r(*objcfg);
+		r.RepairFile(false, nullptr);
+
+		std::cout<<"Repaired file, starting verification";
+		// verify that data was restored even though hosts were unreachable
+		Verify(false);
+		// clean up
+		if(unreachableHosts){
+		UrlReachable(2);
+		UrlReachable(3);
+		}
+		CleanUp();
+    }
+
+    inline void AlignedRepairNoHostTest(){
+    	AlignedRepairTestImpl(true, true, false);
+    }
+
+    inline void AlignedRepairOneChunkTest(){
+    	AlignedRepairTestImpl(true, false, true);
+    }
+
+inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
     {
       // initialize directories
       Init( usecrc32c );
@@ -128,7 +168,7 @@ class MicroTest: public CppUnit::TestCase
       // run the test
       AlignedWriteRaw();
       // verify that we wrote the data correctly
-      Verify();
+      Verify(true);
       // clean up
       UrlReachable( 2 );
       CleanUp();
@@ -153,7 +193,7 @@ class MicroTest: public CppUnit::TestCase
       // run the test
       AlignedWriteRaw();
       // verify that we wrote the data correctly
-      Verify();
+      Verify(true);
       // clean up
       UrlReachable( 2 );
       UrlReachable( 3 );
@@ -192,10 +232,11 @@ class MicroTest: public CppUnit::TestCase
       VarlenWriteTest( 77, false );
     }
 
-    void Verify()
+    void Verify(bool repairAllow)
     {
-      ReadVerifyAll();
-      CorruptedReadVerify();
+      ReadVerifyAll(repairAllow);
+      if(repairAllow)
+    	  CorruptedReadVerify();
     }
 
     void VerifyVectorRead(uint32_t randomSeed);
@@ -204,43 +245,45 @@ class MicroTest: public CppUnit::TestCase
 
     void CleanUp();
 
-    inline void ReadVerifyAll()
+    inline void ReadVerifyAll(bool repairAllow)
     {
-      AlignedReadVerify();
-      PastEndReadVerify();
-      SmallChunkReadVerify();
-      BigChunkReadVerify();
+      AlignedReadVerify(repairAllow);
+      PastEndReadVerify(repairAllow);
+      SmallChunkReadVerify(repairAllow);
+      BigChunkReadVerify(repairAllow);
 
       for( size_t i = 0; i < 10; ++i )
-        RandomReadVerify();
+        RandomReadVerify(repairAllow);
     }
 
-    void ReadVerify( uint32_t rdsize, uint64_t maxrd = std::numeric_limits<uint64_t>::max() );
+    void ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd = std::numeric_limits<uint64_t>::max() );
+    void RandomReadVerify(bool repairAllow);
 
-    void RandomReadVerify();
+    void Corrupted1stBlkReadVerify(bool repairAllow);
 
-    void Corrupted1stBlkReadVerify();
-
-    inline void AlignedReadVerify()
+    inline void AlignedReadVerify(bool repairAllow)
     {
-      ReadVerify( chsize, rawdata.size() );
+      ReadVerify( chsize, repairAllow, rawdata.size() );
     }
 
-    inline void PastEndReadVerify()
+    inline void PastEndReadVerify(bool repairAllow)
     {
-      ReadVerify( chsize );
+      ReadVerify( chsize, repairAllow );
     }
 
-    inline void SmallChunkReadVerify()
+    inline void SmallChunkReadVerify(bool repairAllow)
     {
-      ReadVerify( 5 );
+      ReadVerify( 5, repairAllow );
     }
 
-    inline void BigChunkReadVerify()
+    inline void BigChunkReadVerify(bool repairAllow)
     {
-      ReadVerify( 23 );
+      ReadVerify( 23 , repairAllow);
     }
 
+    /*
+     * switches off some hosts, so this test is only useful with error correction allowed
+     */
     void CorruptedReadVerify();
 
     void CorruptChunk( size_t blknb, size_t strpnb );
@@ -261,6 +304,7 @@ class MicroTest: public CppUnit::TestCase
 
     std::string datadir;
     std::unique_ptr<ObjCfg> objcfg;
+    std::vector<std::string> replaceHosts = {"host1", "host2"};
 
     static const size_t nbdata   = 4;
     static const size_t nbparity = 2;
@@ -298,6 +342,36 @@ void MicroTest::Init( bool usecrc32c )
     CPPUNIT_ASSERT( mkdir( strp.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
   }
 }
+
+void MicroTest::InitRepair( bool usecrc32c )
+{
+  objcfg.reset( new ObjCfg( "test.txt", nbdata, nbparity, chsize, usecrc32c, !usecrc32c ) );
+  rawdata.clear();
+
+  char cwdbuff[1024];
+  char *cwdptr = getcwd( cwdbuff, sizeof( cwdbuff ) );
+  CPPUNIT_ASSERT( cwdptr );
+  std::string cwd = cwdptr;
+  // create the data directory
+  datadir = cwd + "/data";
+  CPPUNIT_ASSERT( mkdir( datadir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
+  // create a directory for each stripe
+  size_t nbstrps = objcfg->nbdata + 2 * objcfg->nbparity;
+  for( size_t i = 0; i < nbstrps; ++i )
+  {
+    std::stringstream ss;
+    ss << std::setfill('0') << std::setw( 2 ) << i;
+    std::string strp = datadir + '/' + ss.str() + '/';
+    objcfg->plgr.emplace_back( strp );
+    CPPUNIT_ASSERT( mkdir( strp.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
+  }
+  for(size_t i = 0; i < replaceHosts.size(); i++){
+	    std::string strp = datadir + '/' + replaceHosts[i] + '/';
+	  objcfg->plgrReplace.emplace_back(strp);
+	  CPPUNIT_ASSERT( mkdir( strp.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
+  }
+}
+
 
 void MicroTest::CorruptChunk( size_t blknb, size_t strpnb )
 {
@@ -360,17 +434,17 @@ void MicroTest::UrlReachable( size_t index )
 void MicroTest::CorruptedReadVerify()
 {
   UrlNotReachable( 0 );
-  ReadVerifyAll();
+  ReadVerifyAll(true);
   UrlNotReachable( 1 );
-  ReadVerifyAll();
+  ReadVerifyAll(true);
   UrlReachable( 0 );
   UrlReachable( 1 );
 
-  CorruptChunk( 0, 1 );
-  ReadVerifyAll();
+  CorruptChunk( 0, 0 );
+  ReadVerifyAll(true);
 
-  CorruptChunk( 0, 2 );
-  ReadVerifyAll();
+  CorruptChunk( 0, 1 );
+  ReadVerifyAll(true);
 
 }
 
@@ -496,9 +570,11 @@ void MicroTest::IllegalVectorRead(uint32_t seed){
 	status = handler2.GetStatus();
 	CPPUNIT_ASSERT_XRDST(*status);
 	delete status;
+
+  Corrupted1stBlkReadVerify(true);
 }
 
-void MicroTest::ReadVerify( uint32_t rdsize, uint64_t maxrd )
+void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
 {
   Reader reader( *objcfg );
   // open the data object
@@ -516,7 +592,7 @@ void MicroTest::ReadVerify( uint32_t rdsize, uint64_t maxrd )
   do
   {
     XrdCl::SyncResponseHandler h;
-    reader.Read( rdoff, rdsize, rdbuff, &h, 0 );
+    reader.Read( rdoff, rdsize, rdbuff, &h, 0, repairAllow);
     h.WaitForResponse();
     status = h.GetStatus();
     CPPUNIT_ASSERT_XRDST( *status );
@@ -550,7 +626,7 @@ void MicroTest::ReadVerify( uint32_t rdsize, uint64_t maxrd )
   delete status;
 }
 
-void MicroTest::RandomReadVerify()
+void MicroTest::RandomReadVerify(bool repairAllow)
 {
   size_t filesize = rawdata.size();
   static std::default_random_engine random_engine( std::chrono::system_clock::now().time_since_epoch().count() );
@@ -571,7 +647,7 @@ void MicroTest::RandomReadVerify()
   // read the data
   char *rdbuff = new char[rdlen];
   XrdCl::SyncResponseHandler h;
-  reader.Read( rdoff, rdlen, rdbuff, &h, 0 );
+  reader.Read( rdoff, rdlen, rdbuff, &h, 0, repairAllow );
   h.WaitForResponse();
   status = h.GetStatus();
   CPPUNIT_ASSERT_XRDST( *status );
@@ -602,7 +678,7 @@ void MicroTest::RandomReadVerify()
   delete status;
 }
 
-void MicroTest::Corrupted1stBlkReadVerify()
+void MicroTest::Corrupted1stBlkReadVerify(bool repairAllow)
 {
   uint64_t rdoff = 0;
   uint32_t rdlen = objcfg->datasize;
@@ -619,7 +695,7 @@ void MicroTest::Corrupted1stBlkReadVerify()
   // read the data
   char *rdbuff = new char[rdlen];
   XrdCl::SyncResponseHandler h;
-  reader.Read( rdoff, rdlen, rdbuff, &h, 0 );
+  reader.Read( rdoff, rdlen, rdbuff, &h, 0, repairAllow );
   h.WaitForResponse();
   status = h.GetStatus();
   CPPUNIT_ASSERT( status->status == XrdCl::stError &&
@@ -708,7 +784,7 @@ void MicroTest::VarlenWriteTest( uint32_t wrtlen, bool usecrc32c )
   delete status;
 
   // verify that we wrote the data correctly
-  Verify();
+  Verify(true);
   // clean up the data directory
   CleanUp();
 }

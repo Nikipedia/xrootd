@@ -433,7 +433,8 @@ namespace XrdEc
                      uint32_t                length,
                      void                   *buffer,
                      XrdCl::ResponseHandler *handler,
-                     uint16_t                timeout )
+                     uint16_t                timeout,
+					 bool 					 doRepair)
   {
     if( objcfg.nomtfile )
     {
@@ -514,7 +515,7 @@ namespace XrdEc
       //-------------------------------------------------------------------
       // Read data from a stripe
       //-------------------------------------------------------------------
-      block_t::read( blk, strpid, rdoff, rdsize, usrbuff, callback, timeout );
+      block_t::read( blk, strpid, rdoff, rdsize, usrbuff, callback, timeout, doRepair );
       //-------------------------------------------------------------------
       // Update absolute offset, read length, and user buffer
       //-------------------------------------------------------------------
