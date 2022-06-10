@@ -111,7 +111,8 @@ namespace XrdEc
                  uint32_t                length,
                  void                   *buffer,
                  XrdCl::ResponseHandler *handler,
-                 uint16_t                timeout );
+                 uint16_t                timeout,
+				 bool 					doRepair = true);
 
       //-----------------------------------------------------------------------
       //! Close the data object
@@ -287,7 +288,8 @@ namespace XrdEc
   	                      uint32_t                  size,
   	                      char                     *usrbuff,
   	                      callback_t                usrcb,
-  	                      uint16_t                  timeout )
+  	                      uint16_t                  timeout,
+						  bool 						doRepair = true)
   	    {
   	      std::unique_lock<std::mutex> lck( self->mtx );
 
@@ -305,7 +307,7 @@ namespace XrdEc
   	      //---------------------------------------------------------------------
   	      if( self->state[strpid] == Missing )
   	      {
-  	        if( !error_correction( self ) )
+  	        if(!doRepair || !error_correction( self ) )
   	        {
   	          //-----------------------------------------------------------------
   	          // Recovery was not possible, notify the user of the error
