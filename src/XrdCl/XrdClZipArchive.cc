@@ -196,6 +196,141 @@ namespace XrdCl
     return XRootDStatus();
   }
 
+//---------------------------------------------------------------------------
+// Write data into a given file
+//---------------------------------------------------------------------------
+template<typename RSP>
+XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
+		uint64_t relativeOffset, uint32_t size, void *usrbuff,
+		ResponseHandler *usrHandler, uint16_t timeout) {
+	if (me.openstage != ZipArchive::Done || !me.archive.IsOpen())
+		return XRootDStatus(stError, errInvalidOp);
+
+	Log *log = DefaultEnv::GetLog();
+
+	auto cditr = me.cdmap.find(fn);
+	if (cditr == me.cdmap.end())
+		return XRootDStatus(stError, errNotFound, errNotFound,
+				"File not found.");
+
+	CDFH *cdfh = me.cdvec[cditr->second].get();
+
+	// check if the file is compressed, for now we only support uncompressed and inflate/deflate compression
+	if (cdfh->compressionMethod != 0 && cdfh->compressionMethod != Z_DEFLATED)
+		return XRootDStatus(stError, errNotSupported, 0,
+				"The compression algorithm is not supported!");
+
+	// Now the problem is that at the beginning of our
+	// file there is the Local-file-header, which size
+	// is not known because of the variable size 'extra'
+	// field, so we need to know the offset of the next
+	// record and shift it by the file size.
+	// The next record is either the next LFH (next file)
+	// or the start of the Central-directory.
+	uint64_t cdOffset =
+			me.zip64eocd ? me.zip64eocd->cdOffset : me.eocd->cdOffset;
+	uint64_t nextRecordOffset =
+			(cditr->second + 1 < me.cdvec.size()) ?
+					CDFH::GetOffset(*me.cdvec[cditr->second + 1]) : cdOffset;
+	uint64_t filesize = cdfh->compressedSize;
+	uint16_t descsize =
+			cdfh->HasDataDescriptor() ?
+					DataDescriptor::GetSize(cdfh->IsZIP64()) : 0;
+	uint64_t fileoff = nextRecordOffset - filesize - descsize;
+	uint64_t offset = fileoff + relativeOffset;
+	uint64_t sizeTillEnd =
+			relativeOffset > cdfh->uncompressedSize ?
+					0 : cdfh->uncompressedSize - relativeOffset;
+	if (size > sizeTillEnd)
+		size = sizeTillEnd;
+
+	// if it is a compressed file use ZIP cache to read from the file
+	if (cdfh->compressionMethod == Z_DEFLATED) {
+		/*log->Dump( ZipMsg, "[0x%x] Reading compressed data.", &me );
+		 // check if respective ZIP cache exists
+		 bool empty = me.zipcache.find( fn ) == me.zipcache.end();
+		 // if the entry does not exist, it will be created using
+		 // default constructor
+		 ZipCache &cache = me.zipcache[fn];
+
+		 if( relativeOffset > cdfh->uncompressedSize )
+		 {
+		 // we are reading past the end of file,
+		 // we can serve the request right away!
+		 RSP *r = new RSP( relativeOffset, 0, usrbuff );
+		 AnyObject *rsp = new AnyObject();
+		 rsp->Set( r );
+		 usrHandler->HandleResponse( new XRootDStatus(), rsp );
+		 return XRootDStatus();
+		 }
+
+		 uint32_t sizereq = size;
+		 if( relativeOffset + size > cdfh->uncompressedSize )
+		 sizereq = cdfh->uncompressedSize - relativeOffset;
+		 cache.QueueReq( relativeOffset, sizereq, usrbuff, usrHandler );
+
+		 // if we have the whole ZIP archive we can populate the cache
+		 // straight away
+		 if( empty && me.buffer)
+		 {
+		 auto begin = me.buffer.get() + fileoff;
+		 auto end   = begin + filesize ;
+		 buffer_t buff( begin, end );
+		 cache.QueueRsp( XRootDStatus(), 0, std::move( buff ) );
+		 return XRootDStatus();
+		 }*/
+
+		// issue remote write
+		if (relativeOffset > cdfh->compressedSize)
+			return XRootDStatus(); // there's nothing to do,
+								   // we already have all the data locally
+		uint32_t wrsize = size;
+		// check if this is the last read (we reached the end of
+		// file from user perspective)
+		if (relativeOffset + size >= cdfh->uncompressedSize) {
+			// if yes, make sure we readout all the compressed data
+			// Note: In a patological case the compressed size may
+			//       be greater than the uncompressed size
+			wrsize =
+					cdfh->compressedSize > relativeOffset ?
+							cdfh->compressedSize - relativeOffset : 0;
+		}
+		// make sure we are not reading past the end of
+		// compressed data
+		if (relativeOffset + size > cdfh->compressedSize)
+			wrsize = cdfh->compressedSize - relativeOffset;
+
+		// now write the data ...
+		// TODO: uncomment code, but first decompress!
+		Pipeline p =
+				XrdCl::Write(me.archive, offset, wrsize, usrbuff)
+						>> [=, &me](XRootDStatus &st) {
+							Log *log = DefaultEnv::GetLog();
+							log->Dump(ZipMsg,
+									"Wrote bytes to remote data.");
+							//cache.QueueRsp( st, relativeOffset, std::move( *rdbuff ) );
+						};
+		Async(std::move(p), timeout);
+
+		return XRootDStatus();
+	}
+
+	Pipeline p = XrdCl::Write(me.archive, offset, size, usrbuff)
+			>> [=, &me](XRootDStatus &st) {
+				log->Dump( ZipMsg, "Wrote bytes to remote data");
+				/*if (usrHandler) {
+					XRootDStatus *status = ZipArchive::make_status(st);
+					RSP *rsp = nullptr;
+					if (st.IsOK())
+						rsp = new RSP(relativeOffset, r.GetLength(),
+								r.GetBuffer());
+					usrHandler->HandleResponse(status, ZipArchive::PkgRsp(rsp));
+				}*/
+			};
+	Async(std::move(p), timeout);
+	return XRootDStatus();
+}
+
   //---------------------------------------------------------------------------
   // Constructor
   //---------------------------------------------------------------------------
@@ -670,6 +805,12 @@ namespace XrdCl
     return ReadFromImpl<ChunkInfo>( *this, fn, offset, size, buffer, handler, timeout );
   }
 
+  XRootDStatus ZipArchive::WriteInto(const std::string &fn, uint64_t offset,
+  		uint32_t size, void *buffer, ResponseHandler *handler,
+  		uint16_t timeout) {
+	  return WriteIntoImpl<ChunkInfo>( *this, fn, offset, size, buffer, handler, timeout);
+  }
+
   //---------------------------------------------------------------------------
   // PgRead data from a given file
   //---------------------------------------------------------------------------
@@ -867,5 +1008,7 @@ namespace XrdCl
     //-------------------------------------------------------------------------
     return WriteImpl( size, buffer, handler, timeout );
   }
+
+
 
 } /* namespace XrdZip */

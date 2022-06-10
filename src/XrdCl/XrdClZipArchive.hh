@@ -42,7 +42,7 @@
 //-----------------------------------------------------------------------------
 // Forward declaration needed for friendship
 //-----------------------------------------------------------------------------
-namespace XrdEc{ class StrmWriter; class Reader; template<bool> class OpenOnlyImpl; };
+namespace XrdEc{ class StrmWriter; class Reader; class RepairTool; template<bool> class OpenOnlyImpl; };
 class MicroTest;
 
 namespace XrdCl
@@ -60,13 +60,15 @@ namespace XrdCl
   {
     friend class XrdEc::StrmWriter;
     friend class XrdEc::Reader;
+    friend class XrdEc::RepairTool;
     template<bool>
     friend class XrdEc::OpenOnlyImpl;
     friend class ::MicroTest;
 
     template<typename RSP>
     friend XRootDStatus ReadFromImpl( ZipArchive&, const std::string&, uint64_t, uint32_t, void*, ResponseHandler*, uint16_t );
-
+    template<typename RSP>
+    friend XRootDStatus WriteIntoImpl(ZipArchive&, const std::string&, uint64_t, uint32_t, void*, ResponseHandler*, uint16_t );
     public:
       //-----------------------------------------------------------------------
       //! Constructor
@@ -165,6 +167,24 @@ namespace XrdCl
                              void              *buffer,
                              ResponseHandler   *handler,
                              uint16_t           timeout = 0 );
+
+      //-----------------------------------------------------------------------
+      //! Overwrite data in a given file
+      //!
+      //! @param fn      : the name of the file into which we are going to write
+      //! @param offset  : offset within the file to write at
+      //! @param size    : number of bytes to be written
+      //! @param buffer  : the buffer for the data
+      //! @param handler : user callback
+      //! @param timeout : operation timeout
+      //! @return        : the status of the operation
+      //-----------------------------------------------------------------------
+      XRootDStatus WriteInto( const std::string &fn,
+    		  	  	  	  	  uint64_t           offset,
+	                          uint32_t           size,
+	                          void              *buffer,
+	                          ResponseHandler   *handler,
+	                          uint16_t           timeout = 0 );
 
       //-----------------------------------------------------------------------
       //! PgRead data from a given file
