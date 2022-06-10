@@ -55,7 +55,7 @@ public:
 	}
 	virtual ~RepairTool() {
 	}
-	void RepairFile(std::vector<std::string> replacementHosts, bool checkAgainAfterRepair);
+	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
 private:
 	void CheckBlock();
@@ -92,6 +92,10 @@ private:
 	size_t lstblk;    //> last block number
 	uint64_t filesize;  //> file size (obtained from xattr)
 	uint64_t chunksRepaired;
+
+	std::mutex finishedRepairMutex;
+	std::condition_variable repairVar;
+	bool finishedRepair;
 
 	bool checkAfterRepair;
 };
