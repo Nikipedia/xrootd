@@ -32,6 +32,8 @@
 
 #include <sys/stat.h>
 
+#include <iostream>
+
 namespace XrdCl
 {
   using namespace XrdZip;
@@ -897,6 +899,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     iov[1].iov_base = const_cast<void*>( buffer );
     iov[1].iov_len  = size;
 
+
     uint64_t wrtoff = cdoff; // we only support appending
     uint32_t wrtlen = iov[0].iov_len + iov[1].iov_len;
 
@@ -999,6 +1002,14 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     }
 
     log->Dump( ZipMsg, "[0x%x] Appending file: %s.", this, fn.c_str() );
+
+    auto bf = (char*)buffer;
+    std::cout << "AppendFile ";
+    for(int u = 0; u < (int)size; u++){
+    	std::cout << *(bf + sizeof(char) * u);
+    }
+    std::cout << "\n"<<std::flush;
+
     //-------------------------------------------------------------------------
     // Create Local File Header record
     //-------------------------------------------------------------------------
