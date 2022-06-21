@@ -47,6 +47,8 @@
 #include <numeric>
 #include <tuple>
 
+#include <iostream>
+
 class MicroTest;
 
 namespace XrdEc
@@ -319,7 +321,7 @@ namespace XrdEc
   	      if( self->state[strpid] == Empty )
   	      {
   	        self->reader.Read( self->blkid, strpid, self->stripes[strpid],
-  	                           read_callback( self, strpid ), timeout );
+  	                           read_callback( self, strpid, doRepair ), timeout );
   	        self->state[strpid] = Loading;
   	      }
   	      //---------------------------------------------------------------------
@@ -356,6 +358,7 @@ namespace XrdEc
   	        if( offset + size > self->stripes[strpid].size() )
   	          size = self->stripes[strpid].size() - offset;
   	        memcpy( usrbuff, self->stripes[strpid].data() + offset, size );
+  	        //std::cout << "Size of read: " << (int) size << "\n" << std::flush;
   	        usrcb( XrdCl::XRootDStatus(), size );
   	        return;
   	      }
@@ -459,12 +462,13 @@ namespace XrdEc
   	    // Get a callback for read operation
   	    //-----------------------------------------------------------------------
   	    inline static
-  	    callback_t read_callback( std::shared_ptr<block_t> &self, size_t strpid )
+  	    callback_t read_callback( std::shared_ptr<block_t> &self, size_t strpid, bool allowRepair = true )
   	    {
-  	      return [self, strpid]( const XrdCl::XRootDStatus &st, uint32_t ) mutable
+  	      return [self, strpid, allowRepair]( const XrdCl::XRootDStatus &st, uint32_t) mutable
   	             {
   	               std::unique_lock<std::mutex> lck( self->mtx );
   	               self->state[strpid] = st.IsOK() ? Valid : Missing;
+  	               if(allowRepair){
   	               //------------------------------------------------------------
   	               // Check if we need to do any error correction (either for
   	               // the current stripe, or any other stripe)
@@ -475,12 +479,18 @@ namespace XrdEc
   	               //------------------------------------------------------------
   	               if( st.IsOK() )
   	                 self->carryout( self->pending[strpid], self->stripes[strpid], st );
+
   	               //------------------------------------------------------------
   	               // Carry out the pending read requests if there was an error
   	               // and we cannot recover
   	               //------------------------------------------------------------
   	               if( !recoverable )
   	                 self->fail_missing();
+  	               }
+  	               else {
+  	            	   if (!st.IsOK()) self->fail_missing();
+  	            	   else self->carryout( self->pending[strpid], self->stripes[strpid], st );
+  	               }
   	             };
   	    }
 
@@ -535,6 +545,7 @@ namespace XrdEc
   	          else if( offset + size > stripe.size() )
   	            size = stripe.size() - offset;
   	          memcpy( usrbuff, stripe.data() + offset, size );
+  	          std::cout << "Size of pending answer: " << (int)size << "\n" << std::flush;
   	          nbrd = size;
   	        }
   	        //---------------------------------------------------------------------

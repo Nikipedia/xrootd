@@ -48,6 +48,7 @@
 #include <tuple>
 #include <set>
 
+
 namespace XrdEc
 {
 
@@ -382,7 +383,6 @@ namespace XrdEc
       // generate the URL
       std::string url = objcfg.GetDataUrl( i );
       archiveIndices.emplace(url, i);
-      // create the file object
       dataarchs.emplace( url, std::make_shared<XrdCl::ZipArchive>(
           Config::Instance().enable_plugins ) );
       // open the archive
@@ -408,6 +408,7 @@ namespace XrdEc
                         auto itr = zipptr->cdmap.begin();
                         for( ; itr != zipptr->cdmap.end() ; ++itr )
                         {
+                          //std::cout << "File " << itr->first << " at " << url <<"\n" << std::flush;
                           urlmap.emplace( itr->first, url );
                           size_t blknb = fntoblk( itr->first );
                           if( blknb > lstblk ) lstblk = blknb;
@@ -587,7 +588,7 @@ namespace XrdEc
     buffer.resize( objcfg.chunksize );
     // issue the read request
     XrdCl::Async( XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
-                    [zipptr, fn, cb, this]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+                    [zipptr, fn, cb, &buffer, this]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
                     {
                       //---------------------------------------------------
                       // If read failed there's nothing to do, just pass the
@@ -621,6 +622,9 @@ namespace XrdEc
                         cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errDataError ), 0 );
                         return;
                       }
+
+                      std::cout << "Read data with length " << (int) ch.length << "\n" << std::flush;
+                      //buffer.resize(ch.length);
                       //---------------------------------------------------
                       // All is good, we can call now the user callback
                       //---------------------------------------------------
