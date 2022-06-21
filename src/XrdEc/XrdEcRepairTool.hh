@@ -42,6 +42,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <sys/stat.h>
+
 namespace XrdEc {
 
 class RepairTool {
@@ -55,14 +57,16 @@ public:
 	}
 	virtual ~RepairTool() {
 	}
-	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
+	std::unique_ptr<ObjCfg> RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
 private:
 	void CheckBlock();
-	static bool error_correction( std::shared_ptr<block_t> &self, std::shared_ptr<RepairTool> writer );
-	static callback_t update_callback(std::shared_ptr<block_t> &self, std::shared_ptr<RepairTool> tool, size_t strpid);
+	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer );
+	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
 	void OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 			uint16_t timeout = 0);
+	void CloseAllArchives(uint16_t timeout = 0);
+	XrdZip::buffer_t GetMetadataBuffer();
 	void AddMissing(const buffer_t &cdbuff, const std::string &url);
 	XrdCl::Pipeline ReadMetadata( size_t index );
     //-----------------------------------------------------------------------
@@ -72,26 +76,35 @@ private:
     //-----------------------------------------------------------------------
     XrdCl::Pipeline ReadSize( size_t index );
 
+    void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
+
+    bool IsMissing(const std::string &fn);
+
     //-----------------------------------------------------------------------
     //! Parse metadata from chunk info object
     //!
     //! @param ch : chunk info object returned by a read operation
     //-----------------------------------------------------------------------
     bool ParseMetadata( XrdCl::ChunkInfo &ch );
-    void WriteChunk(std::shared_ptr<block_t> &blk, size_t strpid);
+    void WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
 
 	ObjCfg &objcfg;
+	// unused reader only for initialization of block_t
 	Reader reader;
+	std::vector<std::shared_ptr<XrdCl::File>>        metadataarchs;      //< ZIP archives with metadata
 	Reader::dataarchs_t readDataarchs; //> map URL to ZipArchive object
 	Reader::dataarchs_t writeDataarchs; //> map URL to ZipArchives for writing (may be different!)
 	Reader::metadata_t metadata;  //> map URL to CD metadata
 	Reader::urlmap_t urlmap;    //> map blknb/strpnb (data chunk) to URL
+	Reader::urlmap_t redirectionMap;
 	Reader::missing_t missing;   //> set of missing stripes
 	std::shared_ptr<block_t> block;  //> cache for the block we are reading from
 	std::mutex blkmtx;    //> mutex guarding the block from parallel access
 	size_t lstblk;    //> last block number
 	uint64_t filesize;  //> file size (obtained from xattr)
 	uint64_t chunksRepaired;
+
+    int redirectMapOffset;
 
 	std::mutex finishedRepairMutex;
 	std::condition_variable repairVar;

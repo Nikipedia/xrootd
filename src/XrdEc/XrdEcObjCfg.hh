@@ -70,6 +70,13 @@ namespace XrdEc
         return url;
       }
 
+      inline std::string GetReplacementUrl(size_t i)const
+      {
+    	  std::string url = plgrReplace[i] + '/' + obj;
+    	  if( !dtacgi.empty()) url += '?' + dtacgi[i];
+    	  return url;
+      }
+
       inline std::string GetMetadataUrl( size_t i ) const
       {
         std::string url = plgr[i] + '/' + obj + ".mt";

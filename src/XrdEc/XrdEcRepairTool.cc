@@ -32,6 +32,7 @@
 
 #include "XrdZip/XrdZipLFH.hh"
 #include "XrdZip/XrdZipCDFH.hh"
+#include "XrdZip/XrdZipEOCD.hh"
 #include "XrdZip/XrdZipUtils.hh"
 
 #include "XrdOuc/XrdOucCRC32C.hh"
@@ -40,6 +41,7 @@
 #include "XrdCl/XrdClZipOperations.hh"
 #include "XrdCl/XrdClFileOperations.hh"
 #include "XrdCl/XrdClFinalOperation.hh"
+#include "XrdCl/XrdClMessageUtils.hh"
 
 #include <algorithm>
 #include <iterator>
@@ -57,9 +59,9 @@ namespace XrdEc {
 // @return     : false if the block is corrupted and cannot be recovered,
 //               true otherwise
 //-----------------------------------------------------------------------
-bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_ptr<RepairTool> writer )
+bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *writer )
 {
-	std::cout<<"Error Correction called\n"<<std::flush;
+
     //---------------------------------------------------------------------
     // Do the accounting for our stripes
     //---------------------------------------------------------------------
@@ -76,6 +78,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_p
           default: ;
         }
       } );
+	//std::cout<<"Error Correction called with " << missingcnt << " missing and " << validcnt << " valid chunks\n"<<std::flush;
     if(validcnt == writer->objcfg.nbchunks){
     	std::cout<<"All Errors corrected\n"<<std::flush;
     	// both check_block and update_callback will skip to the next block by returning false.
@@ -98,6 +101,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_p
     if( validcnt >= self->objcfg.nbdata && missingcnt > 0 )
     {
     	std::cout<<"Recovery possible, attempt starting\n"<<std::flush;
+
       Config &cfg = Config::Instance();
       stripes_t strps( self->get_stripes() );
       try
@@ -111,6 +115,13 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_p
         return false;
       }
       //-------------------------------------------------------------------
+      // Now that we triggered the recovery procedure mark every missing
+      // stripe as recovering.
+      //-------------------------------------------------------------------
+      std::for_each( self->state.begin(), self->state.end(),
+                     []( block_t::state_t &s ){ if( s == block_t::Missing ) s = block_t::Recovering; } );
+
+      //-------------------------------------------------------------------
       // Now when we recovered the data we need to mark every stripe as
       // valid and execute the pending reads
       //-------------------------------------------------------------------
@@ -119,14 +130,19 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_p
         if( self->state[strpid] != block_t::Recovering ) continue;
         // Write new content to disk
         std::cout<<"Write Chunk to disk: " << strpid << "\n"<<std::flush;
+        std::cout << "Stripe " << (int)strpid << " with data ";
+            		for(int i = 0; i < (int)writer->objcfg.chunksize; i++){
+            			std::cout << self->stripes[strpid][i];
+            		}
         writer->WriteChunk(self, strpid);
         if(writer->checkAfterRepair){
-        	self->reader.Read( self->blkid, strpid, self->stripes[strpid],
+        	writer->Read( self->blkid, strpid, self->stripes[strpid],
         	                   RepairTool::update_callback( self, writer, strpid ) );
         }
         else{
         	writer->chunksRepaired++;
         	self->state[strpid] = block_t::Valid;
+        	validcnt++;
         	if(validcnt == writer->objcfg.nbchunks){
         	    	return false;
         	    }
@@ -140,32 +156,26 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, std::shared_p
     size_t i = 0;
     while( loadingcnt + validcnt < self->objcfg.nbchunks && i < self->objcfg.nbchunks )
     {
-    	std::cout<<"Load chunk of stripe " << i << " from disk\n"<<std::flush;
       size_t strpid = i++;
       if( self->state[strpid] != block_t::Empty ) continue;
-      self->reader.Read( self->blkid, strpid, self->stripes[strpid],
+      //std::cout<<"Load chunk of stripe " << strpid << " from disk\n"<<std::flush;
+      writer->Read( self->blkid, strpid, self->stripes[strpid],
                          RepairTool::update_callback( self, writer, strpid ) );
       self->state[strpid] = block_t::Loading;
       ++loadingcnt;
     }
 
-    //-------------------------------------------------------------------
-    // Now that we triggered the recovery procedure mark every missing
-    // stripe as recovering.
-    //-------------------------------------------------------------------
-    std::for_each( self->state.begin(), self->state.end(),
-                   []( block_t::state_t &s ){ if( s == block_t::Missing ) s = block_t::Recovering; } );
     return true;
 }
 
 //-----------------------------------------------------------------------
 // Get a callback for read operation
 //-----------------------------------------------------------------------
-callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, std::shared_ptr<RepairTool> tool,
+callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairTool *tool,
 		size_t strpid) {
 	return [self, tool, strpid](const XrdCl::XRootDStatus &st, uint32_t) mutable {
 		std::unique_lock<std::mutex> lck(tool->blkmtx);
-		std::cout << "Update callback for stripe " << strpid << "\n" << std::flush;
+		//std::cout << "Update callback for stripe " << strpid << " was " << (st.IsOK()?"successful":"unsuccessful")<<"\n" << std::flush;
 		self->state[strpid] = st.IsOK() ? self->Valid : self->Missing;
 		//------------------------------------------------------------
 		// Check if we need to do any error correction (either for
@@ -234,7 +244,7 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, std::shar
 	usrcb(XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errInvalidOp), 0);
 }*/
 
-void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler) {
+std::unique_ptr<ObjCfg> RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler) {
 	// pseudocode:
 	// open file in update mode
 	// create redirection table of hosts (index is stripe index)
@@ -254,8 +264,16 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	//		read c again and jump to "check c"
 	// close file and return
 	std::cout<<"Repair called with " << (int)objcfg.nbchunks << " chunks of which " << (int)objcfg.nbdata << "are data\n"<<std::flush;
-	RepairTool::OpenInUpdateMode(handler);
+	XrdCl::SyncResponseHandler handler1;
+	RepairTool::OpenInUpdateMode(&handler1);
+	handler1.WaitForResponse();
+
+
+
 	std::cout<<"Open called\n"<<std::flush;
+	for(auto it = urlmap.begin(); it != urlmap.end(); it++){
+		std::cout << "Map key " << (*it).first << " to " << (*it).second << "\n" << std::flush;
+	}
 	checkAfterRepair = checkAgainAfterRepair;
 
 	//size_t blkid;
@@ -268,7 +286,24 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	std::cout<<"Out of Check Block of main repair method\n"<< std::flush;
 	repairVar.wait(lk, [this]{return this->finishedRepair;});
 	lk.unlock();
-	return;
+	CloseAllArchives(0);
+	std::cout<<"Out of Archive Closing of main repair method\n"<< std::flush;
+
+	std::unique_ptr<ObjCfg> cfg = std::make_unique<ObjCfg>(objcfg);
+		for(size_t i = 0; i < cfg->nbchunks; i++){
+			if(redirectionMap.find(cfg->GetDataUrl(i)) != redirectionMap.end()){
+				cfg->plgr[i] = redirectionMap[cfg->GetDataUrl(i)];
+			}
+		}
+		for(auto it = cfg->plgr.begin(); it != cfg->plgr.end(); it++){
+					std::cout << "Host at " << *it << "\n" << std::flush;
+				}
+		for(auto it = redirectionMap.begin(); it != redirectionMap.end(); it++)
+							std::cout << "Redirect from " << it->first << " to " << it->second << "\n" << std::flush;
+
+
+		std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired << "\n" << std::flush;
+		return cfg;
 
 	//< ID of the block from which we will be reading
 		//strpid = (i % objcfg.nbchunks); //< ID of the stripe from which we will be reading
@@ -283,22 +318,21 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 void RepairTool::CheckBlock() {
 	std::unique_lock<std::mutex> lck(blkmtx);
+	redirectMapOffset = 0;
 	size_t totalBlocks = 0;
 	if (objcfg.nomtfile) {
 		totalBlocks = filesize * objcfg.nbchunks / objcfg.blksize;
 	} else {
-		totalBlocks = 1;
+		totalBlocks = lstblk + 1;
 	}
 	size_t blkid = currentBlockChecked;
 	std::cout << "Block " << blkid << " out of " << totalBlocks << "\n"
 			<< std::flush;
 	if (blkid < totalBlocks) {
-		auto self = std::shared_ptr<RepairTool>(this);
-
 		if (!block || block->blkid != blkid)
 			block = std::make_shared<block_t>(blkid, reader, objcfg);
 		auto blk = block;
-		if (!error_correction(blk, self)) {
+		if (!error_correction(blk, this)) {
 			currentBlockChecked++;
 			lck.unlock();
 			CheckBlock();
@@ -314,25 +348,189 @@ void RepairTool::CheckBlock() {
 
 }
 
-void RepairTool::WriteChunk(std::shared_ptr<block_t> &blk, size_t strpid){
+void RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t strpid){
+	std::cout << "Writing chunk at stripe " << strpid << "\n" << std::flush;
 	auto blkid = blk->blkid;
-	auto url = objcfg.GetDataUrl(strpid);
+	std::string fn = objcfg.GetFileName( blkid, strpid );
+
+	std::string url;
+	// if the block/stripe does not exist it means we are reading passed the end of the file
+	auto itr = urlmap.find(fn);
+	if (itr == urlmap.end())
+	{
+		std::cout << "Couldn't locate file " << fn << " for writing\n" << std::flush;
+		auto it = redirectionMap.begin();
+		int u = 0;
+		while(it != redirectionMap.end()){
+			if(u >= redirectMapOffset) break;
+			u++;
+			it++;
+		}
+		url = it->first;
+		redirectMapOffset++;
+		std::cout << "Replacing it with host " << url << "\n" << std::flush;
+	}
+	else url = itr->second;
 	if(writeDataarchs[url]->IsOpen()){
+		std::cout << "Data archive " << url << " open\n" << std::flush;
 		std::string fn = objcfg.GetFileName( blkid, strpid );
 		auto it = writeDataarchs[url]->cdmap.find(fn);
 		uint64_t offset = 0;
 		if(it != writeDataarchs[url]->cdmap.end()){
+			std::cout << "Updating data archive " << url << "\n" << std::flush;
 			// the file exists, so we overwrite it
-			writeDataarchs[url]->WriteInto(fn, offset, objcfg.chunksize, &blk->stripes[strpid], nullptr, 0);
+			writeDataarchs[url]->WriteInto(fn, offset, objcfg.chunksize, &(blk->stripes[strpid][0]), nullptr, 0);
 			// update chksum??
 		}
 		else{
-			uint32_t chksum = objcfg.digest(0, &blk->stripes[strpid], objcfg.chunksize);
+			std::cout << "Appending to data archive " << url << ": "<< std::flush;
+			for(int u = 0; u < (int)objcfg.chunksize; u++){
+				std::cout << blk->stripes[strpid][u];
+			}
+			std::cout << "\n";
+			uint32_t chksum = objcfg.digest(0, &(blk->stripes[strpid][0]), objcfg.chunksize);
 			// the file doesnt exist at all, so we append it to the archive (likely a completely new archive)
-			writeDataarchs[url]->AppendFile(fn, chksum, objcfg.chunksize, &blk->stripes[strpid], nullptr, 0);
+			writeDataarchs[url]->AppendFile(fn, chksum, objcfg.chunksize, &(blk->stripes[strpid][0]), nullptr, 0);
 		}
-
 	}
+}
+
+//---------------------------------------------------------------------------
+// Get a buffer with metadata (CDFH and EOCD records)
+//---------------------------------------------------------------------------
+XrdZip::buffer_t RepairTool::GetMetadataBuffer()
+{
+  using namespace XrdZip;
+
+  const size_t cdcnt = objcfg.plgr.size();
+  std::vector<buffer_t> buffs; buffs.reserve( cdcnt ); // buffers with raw data
+  std::vector<LFH> lfhs; lfhs.reserve( cdcnt );        // LFH records
+  std::vector<CDFH> cdfhs; cdfhs.reserve( cdcnt );     // CDFH records
+
+  //-------------------------------------------------------------------------
+  // prepare data structures (LFH and CDFH records)
+  //-------------------------------------------------------------------------
+  uint64_t offset = 0;
+  uint64_t cdsize = 0;
+  mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+  for( size_t i = 0; i < cdcnt; ++i )
+  {
+    std::string fn = std::to_string( i );                          // file name (URL of the data archive)
+    buffer_t buff( writeDataarchs[objcfg.GetDataUrl(i)]->GetCD() );                        // raw data buffer (central directory of the data archive)
+    uint32_t cksum = objcfg.digest( 0, buff.data(), buff.size() ); // digest (crc) of the buffer
+    lfhs.emplace_back( fn, cksum, buff.size(), time( 0 ) );        // LFH record for the buffer
+    LFH &lfh = lfhs.back();
+    cdfhs.emplace_back( &lfh, mode, offset );                      // CDFH record for the buffer
+    offset += LFH::lfhBaseSize + fn.size() + buff.size();          // shift the offset
+    cdsize += cdfhs.back().cdfhSize;                               // update central directory size
+    buffs.emplace_back( std::move( buff ) );                       // keep the buffer for later
+  }
+
+  uint64_t zipsize = offset + cdsize + EOCD::eocdBaseSize;
+  buffer_t zipbuff; zipbuff.reserve( zipsize );
+
+  //-------------------------------------------------------------------------
+  // write into the final buffer LFH records + raw data
+  //-------------------------------------------------------------------------
+  for( size_t i = 0; i < cdcnt; ++i )
+  {
+    lfhs[i].Serialize( zipbuff );
+    std::copy( buffs[i].begin(), buffs[i].end(), std::back_inserter( zipbuff ) );
+  }
+  //-------------------------------------------------------------------------
+  // write into the final buffer CDFH records
+  //-------------------------------------------------------------------------
+  for( size_t i = 0; i < cdcnt; ++i )
+    cdfhs[i].Serialize( zipbuff );
+  //-------------------------------------------------------------------------
+  // prepare and write into the final buffer the EOCD record
+  //-------------------------------------------------------------------------
+  EOCD eocd( offset, cdcnt, cdsize );
+  eocd.Serialize( zipbuff );
+
+  return zipbuff;
+}
+
+void RepairTool::CloseAllArchives(uint16_t timeout){
+	//-------------------------------------------------------------------------
+	    // First, check the global status, if we are in an error state just
+	    // fail the request.
+	    //-------------------------------------------------------------------------
+	    //XrdCl::XRootDStatus gst = global_status.get();
+	    //if( !gst.IsOK() ) return;// ScheduleHandler( handler, gst );
+
+	    const size_t size = objcfg.plgr.size();
+	    //-------------------------------------------------------------------------
+	    // prepare the metadata (the Central Directory of each data ZIP)
+	    //-------------------------------------------------------------------------
+	    auto zipbuff = objcfg.nomtfile ? nullptr :
+	                   std::make_shared<XrdZip::buffer_t>( GetMetadataBuffer() );
+	    //-------------------------------------------------------------------------
+	    // prepare the pipelines ...
+	    //-------------------------------------------------------------------------
+	    std::vector<XrdCl::Pipeline> closes;
+	    std::vector<XrdCl::Pipeline> save_metadata;
+	    closes.reserve( size );
+	    std::string closeTime = std::to_string( time(NULL) );
+
+	    // since the filesize was already determined in previous writes we keep it
+	    XrdCl::Pipeline p2 = ReadSize(0);
+	    XrdCl::Async(std::move(p2));
+
+	    std::vector<XrdCl::xattr_t> xav{ {"xrdec.filesize", std::to_string(filesize)},
+	                                     {"xrdec.strpver", closeTime.c_str()} };
+
+	    for( size_t i = 0; i < size; ++i )
+	    {
+	    	// TODO: check whether we also need to close archives that were replaced
+	      //-----------------------------------------------------------------------
+	      // close ZIP archives with data
+	      //-----------------------------------------------------------------------
+	      if( writeDataarchs[objcfg.GetDataUrl(i)]->IsOpen() )
+	      {
+	    	  std::cout << "Data archive with url " << objcfg.GetDataUrl(i) << " is open\n" << std::flush;
+	        XrdCl::Pipeline p = XrdCl::SetXAttr( writeDataarchs[objcfg.GetDataUrl(i)]->GetFile(), xav )
+	                          | XrdCl::CloseArchive( *writeDataarchs[objcfg.GetDataUrl(i)] );
+	        closes.emplace_back( std::move( p ) );
+	      }
+	      //-----------------------------------------------------------------------
+	      // replicate the metadata
+	      //-----------------------------------------------------------------------
+	      if( zipbuff )
+	      {
+	        std::string url = objcfg.GetMetadataUrl( i );
+	        metadataarchs.emplace_back( std::make_shared<XrdCl::File>(
+	            Config::Instance().enable_plugins ) );
+	        XrdCl::Pipeline p = XrdCl::Open( *metadataarchs[i], url, XrdCl::OpenFlags::New | XrdCl::OpenFlags::Write )
+	                          | XrdCl::Write( *metadataarchs[i], 0, zipbuff->size(), zipbuff->data() )
+	                          | XrdCl::Close( *metadataarchs[i] )
+	                          | XrdCl::Final( [zipbuff]( const XrdCl::XRootDStatus& ){ } );
+
+	        save_metadata.emplace_back( std::move( p ) );
+	      }
+	    }
+
+	    //-------------------------------------------------------------------------
+	    // If we were instructed not to create the the additional metadata file
+	    // do the simplified close
+	    //-------------------------------------------------------------------------
+	    if( save_metadata.empty() )
+	    {
+	      XrdCl::Pipeline p = XrdCl::Parallel( closes ).AtLeast( objcfg.nbchunks );
+	      XrdCl::Async( std::move( p ), timeout );
+	      return;
+	    }
+
+	    //-------------------------------------------------------------------------
+	    // compose closes & save_metadata:
+	    //  - closes must be successful at least for #data + #parity
+	    //  - save_metadata must be successful at least for #parity + 1
+	    //-------------------------------------------------------------------------
+	    XrdCl::Pipeline p = XrdCl::Parallel(
+	        XrdCl::Parallel( closes ).AtLeast( objcfg.nbchunks ),
+	        XrdCl::Parallel( save_metadata ).AtLeast( objcfg.nbparity + 1 )
+	      );
+	    XrdCl::Async( std::move( p ), timeout );
 }
 
 //---------------------------------------------------------------------------
@@ -359,7 +557,7 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 					XrdCl::OpenArchive(*readDataarchs[url], url,
 							XrdCl::OpenFlags::Update));
 		} else
-			opens.emplace_back(OpenOnly(*readDataarchs[url], url, false));
+			opens.emplace_back(OpenOnly(*readDataarchs[url], url, true));
 	}
 
 	auto pipehndl = [=](const XrdCl::XRootDStatus &st) { // set the central directories in ZIP archives (if we use metadata files)
@@ -404,13 +602,17 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 //-----------------------------------------------------------------------
 void RepairTool::AddMissing(const buffer_t &cdbuff, const std::string &url) {
 	if (objcfg.plgrReplace.size() > 0) {
-		const std::string newUrl = objcfg.plgrReplace[0];
+		const std::string newUrl = objcfg.GetReplacementUrl(0);
+		const std::string replacementPlgr = objcfg.plgrReplace[0];
 		objcfg.plgrReplace.erase(objcfg.plgrReplace.begin());
 		auto newArch = std::make_shared<XrdCl::ZipArchive>(
 				Config::Instance().enable_plugins);
 		newArch->OpenArchive(newUrl,
-				XrdCl::OpenFlags::New | XrdCl::OpenFlags::Update, nullptr, 0);
+				XrdCl::OpenFlags::New | XrdCl::OpenFlags::Write, nullptr, 0);
 		writeDataarchs[url] = newArch;
+		std::cout << "Creating new archive pointing from url " << url << " to " << newUrl << "\n" << std::flush;
+		// save a mapping from old to new urls so user knows where actual data is
+		redirectionMap[url] = replacementPlgr;
 	}else{
 		// TODO: throw error if there's no new url
 	}
@@ -538,5 +740,95 @@ XrdCl::Pipeline RepairTool::ReadMetadata(size_t index) {
 				}
 			});
 }
+
+void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout )
+{
+  // generate the file name (blknb/strpnb)
+  std::string fn = objcfg.GetFileName( blknb, strpnb );
+  // if the block/stripe does not exist it means we are reading passed the end of the file
+  auto itr = urlmap.find( fn );
+  if( itr == urlmap.end() )
+  {
+    auto st = !IsMissing( fn ) ? XrdCl::XRootDStatus() :
+              XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
+    ThreadPool::Instance().Execute( cb, st, 0 );
+    return;
+  }
+  // get the URL of the ZIP archive with the respective data
+  const std::string &url = itr->second;
+
+  std::cout << "Reading from " << url << "\n" << std::flush;
+
+  // get the ZipArchive object
+  auto &zipptr = readDataarchs[url];
+  // check the size of the data to be read
+  XrdCl::StatInfo *info = nullptr;
+  auto st = zipptr->Stat( fn, info );
+  if( !st.IsOK() )
+  {
+    ThreadPool::Instance().Execute( cb, st, 0 );
+    return;
+  }
+  uint32_t rdsize = info->GetSize();
+  delete info;
+  // create a buffer for the data
+  buffer.resize( objcfg.chunksize );
+  // issue the read request
+  XrdCl::Async( XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
+                  [zipptr, fn, cb, this]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+                  {
+                    //---------------------------------------------------
+                    // If read failed there's nothing to do, just pass the
+                    // status to user callback
+                    //---------------------------------------------------
+                    if( !st.IsOK() )
+                    {
+                      cb( st, 0 );
+                      return;
+                    }
+                    //---------------------------------------------------
+                    // Get the checksum for the read data
+                    //---------------------------------------------------
+                    uint32_t orgcksum = 0;
+                    auto s = zipptr->GetCRC32( fn, orgcksum );
+                    //---------------------------------------------------
+                    // If we cannot extract the checksum assume the data
+                    // are corrupted
+                    //---------------------------------------------------
+                    if( !st.IsOK() )
+                    {
+                      cb( st, 0 );
+                      return;
+                    }
+                    //---------------------------------------------------
+                    // Verify data integrity
+                    //---------------------------------------------------
+                    uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
+                    if( orgcksum != cksum )
+                    {
+                      cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errDataError ), 0 );
+                      return;
+                    }
+                    //---------------------------------------------------
+                    // All is good, we can call now the user callback
+                    //---------------------------------------------------
+                    cb( XrdCl::XRootDStatus(), ch.length );
+                  }, timeout );
+}
+
+//-----------------------------------------------------------------------
+//! Check if chunk file name is missing
+//-----------------------------------------------------------------------
+bool RepairTool::IsMissing( const std::string &fn )
+{
+  // if the chunk is in the missing set return true
+  if( missing.count( fn ) ) return true;
+  // if we don't have a metadata file and the chunk exceeds last chunk
+  // also return true
+  if( objcfg.nomtfile && fntoblk( fn ) <= lstblk ) return true;
+  // otherwise return false
+  return false;
+}
+
 
 }
