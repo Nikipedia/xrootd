@@ -13,6 +13,7 @@
 #include "XrdCl/XrdClOperationHandlers.hh"
 #include "XrdCl/XrdClCtx.hh"
 
+
 namespace XrdCl
 {
 
@@ -113,7 +114,11 @@ namespace XrdCl
         OpenFlags::Flags  flags   = std::get<FlagsArg>( this->args ).Get();
         uint16_t          timeout = pipelineTimeout < this->timeout ?
                                    pipelineTimeout : this->timeout;
-        return this->zip->OpenArchive( url, flags, handler, timeout );
+        XRootDStatus st = this->zip->OpenArchive( url, flags, handler, timeout );
+        if(!st.IsOK()){
+        	std::cout << "Couldn't open " << url << "\n" << std::flush;
+        }
+        return st;
       }
   };
 
@@ -286,7 +291,7 @@ namespace XrdCl
       //------------------------------------------------------------------------
       XRootDStatus RunImpl( PipelineHandler *handler, uint16_t pipelineTimeout )
       {
-        std::string &fn = std::get<FileNameArg>( this->args ).Get();
+    	  std::string &fn = std::get<FileNameArg>( this->args ).Get();
         uint64_t     offset  = std::get<OffsetArg>( this->args ).Get();
         uint32_t     size    = std::get<SizeArg>( this->args ).Get();
         void        *buffer  = std::get<BufferArg>( this->args ).Get();
