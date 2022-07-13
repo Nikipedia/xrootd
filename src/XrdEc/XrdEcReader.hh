@@ -33,6 +33,8 @@
 #include "XrdEc/XrdEcConfig.hh"
 #include "XrdEc/XrdEcObjCfg.hh"
 #include "XrdEc/XrdEcThreadPool.hh"
+#include "XrdZip/XrdZipCDFH.hh"
+#include "XrdZip/XrdZipLFH.hh"
 
 #include "XrdCl/XrdClParallelOperation.hh"
 #include "XrdCl/XrdClZipOperations.hh"
@@ -141,6 +143,8 @@ namespace XrdEc
         return filesize;
       }
 
+      void DebuggingRead(size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
+
     private:
 
       //-----------------------------------------------------------------------
@@ -152,7 +156,7 @@ namespace XrdEc
       //! @param cb      : callback
       //! @param timeout : operation timeout
       //-----------------------------------------------------------------------
-      void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0 );
+      void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
 
       //-----------------------------------------------------------------------
       //! Read metadata for the object
@@ -167,6 +171,8 @@ namespace XrdEc
       //! @param index : placement's index
       //-----------------------------------------------------------------------
       XrdCl::Pipeline ReadSize( size_t index );
+
+      XrdCl::Pipeline ReadHealth( size_t index );
 
       //-----------------------------------------------------------------------
       //! Parse metadata from chunk info object
@@ -313,6 +319,8 @@ namespace XrdEc
   	                      uint16_t                  timeout,
 						  bool 						doRepair = true)
   	    {
+  	    	//std::cout << "Trying to lock block's self mtx in read\n"<<std::flush;
+  	    	//std::cout << "Thread id:" << std::this_thread::get_id()<<"\n"<<std::flush;
   	      std::unique_lock<std::mutex> lck( self->mtx );
 
   	      //---------------------------------------------------------------------
@@ -320,8 +328,10 @@ namespace XrdEc
   	      //---------------------------------------------------------------------
   	      if( self->state[strpid] == Empty )
   	      {
+  	    	  //std::cout << "Acquired lock, call read\n"<<std::flush;
   	        self->reader.Read( self->blkid, strpid, self->stripes[strpid],
   	                           read_callback( self, strpid, doRepair ), timeout );
+  	        //std::cout << "Returned from read\n"<<std::flush;
   	        self->state[strpid] = Loading;
   	      }
   	      //---------------------------------------------------------------------
@@ -347,7 +357,7 @@ namespace XrdEc
   	      //---------------------------------------------------------------------
   	      if( self->state[strpid] == Loading || self->state[strpid] == Recovering )
   	      {
-  	        self->pending[strpid].emplace_back( offset, size, usrbuff, usrcb );
+  	    	  self->pending[strpid].emplace_back( offset, size, usrbuff, usrcb );
   	        return;
   	      }
   	      //---------------------------------------------------------------------
@@ -466,7 +476,10 @@ namespace XrdEc
   	    {
   	      return [self, strpid, allowRepair]( const XrdCl::XRootDStatus &st, uint32_t) mutable
   	             {
-  	               std::unique_lock<std::mutex> lck( self->mtx );
+  	    	//std::cout << "Trying to lock block's self mutex in callback\n"<<std::flush;
+  	    	//std::cout << "Callback Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
+  	    	       std::unique_lock<std::mutex> lck( self->mtx );
+  	               //std::cout << "Locked block's self mutex successfully\n" << std::flush;
   	               self->state[strpid] = st.IsOK() ? Valid : Missing;
   	               if(allowRepair){
   	               //------------------------------------------------------------
@@ -545,7 +558,7 @@ namespace XrdEc
   	          else if( offset + size > stripe.size() )
   	            size = stripe.size() - offset;
   	          memcpy( usrbuff, stripe.data() + offset, size );
-  	          std::cout << "Size of pending answer: " << (int)size << "\n" << std::flush;
+  	          //std::cout << "Size of pending answer: " << (int)size << "\n" << std::flush;
   	          nbrd = size;
   	        }
   	        //---------------------------------------------------------------------

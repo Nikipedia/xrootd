@@ -66,7 +66,7 @@ namespace XrdEc
       inline std::string GetDataUrl( size_t i ) const
       {
         std::string url = plgr[i] + '/' + obj;
-        if( !dtacgi.empty() ) url += '?' + dtacgi[i];
+        if( !dtacgi.empty() && dtacgi.size() > i ) url += '?' + dtacgi[i];
         return url;
       }
 
