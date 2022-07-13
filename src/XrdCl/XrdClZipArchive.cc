@@ -50,6 +50,7 @@ namespace XrdCl
                              ResponseHandler   *usrHandler,
                              uint16_t           timeout )
   {
+	  //std::cout << "Thread ID in ReadFromImpl: " << std::this_thread::get_id()<<"\n" << std::flush;
     if( me.openstage != ZipArchive::Done || !me.archive.IsOpen() )
       return XRootDStatus( stError, errInvalidOp );
 
@@ -158,6 +159,7 @@ namespace XrdCl
                        };
         Async( std::move( p ), timeout );
       }
+      //std::cout << "Thread ID in ReadFrom's Compressed Pipeline: " << std::this_thread::get_id()<<"\n" << std::flush;
 
       return XRootDStatus();
     }
@@ -177,13 +179,15 @@ namespace XrdCl
         RSP          *rsp = new RSP( relativeOffset, size, usrbuff );
         ZipArchive::Schedule( usrHandler, st, rsp );
       }
+      //std::cout << "Thread ID in ReadFrom's Pipeline: " << std::this_thread::get_id()<<"\n" << std::flush;
+
       return XRootDStatus();
     }
 
     Pipeline p = XrdCl::RdWithRsp<RSP>( me.archive, offset, size, usrbuff ) >>
                    [=, &me]( XRootDStatus &st, RSP &r )
                    {
-                     log->Dump( ZipMsg, "[0x%x] Read %d bytes of remote data at "
+    				log->Dump( ZipMsg, "[0x%x] Read %d bytes of remote data at "
                                         "offset %d.", &me, r.GetLength(), r.GetOffset() );
                      if( usrHandler )
                      {
@@ -198,12 +202,25 @@ namespace XrdCl
     return XRootDStatus();
   }
 
+  std::string string_to_hex(const std::string& input)
+  {
+      static const char hex_digits[] = "0123456789ABCDEF";
+
+      std::string output;
+      output.reserve(input.length() * 2);
+      for (unsigned char c : input)
+      {
+          output.push_back(hex_digits[c >> 4]);
+          output.push_back(hex_digits[c & 15]);
+      }
+      return output;
+  }
 //---------------------------------------------------------------------------
 // Write data into a given file
 //---------------------------------------------------------------------------
 template<typename RSP>
 XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
-		uint64_t relativeOffset, uint32_t size, void *usrbuff,
+		uint64_t relativeOffset, uint32_t size, uint32_t chksum, void *usrbuff,
 		ResponseHandler *usrHandler, uint16_t timeout) {
 	if (me.openstage != ZipArchive::Done || !me.archive.IsOpen())
 		return XRootDStatus(stError, errInvalidOp);
@@ -229,7 +246,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
 	// record and shift it by the file size.
 	// The next record is either the next LFH (next file)
 	// or the start of the Central-directory.
-	uint64_t cdOffset =
+	/*uint64_t cdOffset =
 			me.zip64eocd ? me.zip64eocd->cdOffset : me.eocd->cdOffset;
 	uint64_t nextRecordOffset =
 			(cditr->second + 1 < me.cdvec.size()) ?
@@ -244,7 +261,28 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
 			relativeOffset > cdfh->uncompressedSize ?
 					0 : cdfh->uncompressedSize - relativeOffset;
 	if (size > sizeTillEnd)
-		size = sizeTillEnd;
+		size = sizeTillEnd;*/
+	uint64_t offset = CDFH::GetOffset(*cdfh);
+
+	//LFH *lfh = new LFH( fn, crc32, size, time( 0 ) );#
+	LFH lfh(fn, chksum, size, time(0));
+
+
+	std::shared_ptr<buffer_t> lfhbuf;
+	uint32_t lfhlen = lfh.lfhSize;
+	//char* lfhbuf = calloc(size+lfhlen, sizeof(char));
+	//std::vector<char> vec(lfhbuf, )
+	lfhbuf = std::make_shared<buffer_t>();
+	lfhbuf->reserve(size+lfhlen);
+	lfh.Serialize(*lfhbuf);
+	auto usrchars = (char*)usrbuff;
+	for(uint32_t u = 0; u < size; u++){
+		lfhbuf->push_back(usrchars[u]);
+	}
+	//offset -= lfhlen;
+	size += lfhlen;
+
+
 
 	// if it is a compressed file use ZIP cache to read from the file
 	if (cdfh->compressionMethod == Z_DEFLATED) {
@@ -317,17 +355,20 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
 		return XRootDStatus();
 	}
 
-	Pipeline p = XrdCl::Write(me.archive, offset, size, usrbuff)
-			>> [=, &me](XRootDStatus &st) {
+	std::string str(lfhbuf->data(), size);
+	std::cout << "Write into archive at offset " << offset << " string: " << str << "\nhex: " << string_to_hex(str) << "\n" << std::flush;
+
+	Pipeline p = XrdCl::Write(me.archive, offset, size, lfhbuf->data())
+			>> [=, &me](XRootDStatus &st) mutable {
 				log->Dump( ZipMsg, "Wrote bytes to remote data");
-				/*if (usrHandler) {
+				if(!st.IsOK()){
+					std::cout << "Error: " << st.GetErrorMessage() << "\n" << std::flush;
+				}
+				if (usrHandler) {
 					XRootDStatus *status = ZipArchive::make_status(st);
-					RSP *rsp = nullptr;
-					if (st.IsOK())
-						rsp = new RSP(relativeOffset, r.GetLength(),
-								r.GetBuffer());
-					usrHandler->HandleResponse(status, ZipArchive::PkgRsp(rsp));
-				}*/
+					usrHandler->HandleResponse(status, nullptr);
+				}
+				lfhbuf.reset();
 			};
 	Async(std::move(p), timeout);
 	return XRootDStatus();
@@ -436,7 +477,10 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                               [=]( XRootDStatus &status, ChunkInfo &chunk ) mutable
                               {
                                 // check the status is OK
-                                if( !status.IsOK() ) return;
+                                if( !status.IsOK() ) {
+                                	std::cout << "Open ZipArchive status not ok\n"<<std::flush;
+                                	return;
+                                }
 
                                 const char *buff = reinterpret_cast<char*>( chunk.buffer );
                                 while( true )
@@ -449,6 +493,8 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                       const char *eocdBlock = EOCD::Find( buff, chunk.length );
                                       if( !eocdBlock )
                                       {
+                                    	  std::string str(buff, chunk.length);
+                                    	  std::cout << "End-of-central-directory signature not found with buffer length " << chunk.length << " and file content:\n" <<str<<"\n" <<std::flush;
                                         XRootDStatus error( stError, errDataError, 0,
                                                             "End-of-central-directory signature not found." );
                                         Pipeline::Stop( error );
@@ -562,6 +608,18 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                         else
                                           std::tie( cdvec, cdmap ) = CDFH::Parse( buff, eocd->cdSize, eocd->nbCdRec );
                                         log->Dump( ZipMsg, "[0x%x] CD records parsed.", this );
+
+                                        // TODO: is this check correct? checks if the sums of uncompressedSizes are smaller than "archsize" and checks offsets against archsize.
+                                        uint64_t sumSize = 0;
+                                        uint64_t sumCompSize = 0;
+                                        for(auto it = cdvec.begin(); it != cdvec.end(); it++){
+                                        	sumSize += (*it)->uncompressedSize;
+                                        	sumCompSize += (*it)->compressedSize;
+                                        	if((*it)->offset > archsize || (*it)->offset + (*it)->compressedSize > archsize
+                                        			|| (*it)->offset + (*it)->uncompressedSize > archsize) throw bad_data();
+                                        }
+                                        if(sumSize > archsize) throw bad_data();
+                                        if(sumCompSize > archsize) throw bad_data();
                                       }
                                       catch( const bad_data &ex )
                                       {
@@ -581,6 +639,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                   break;
                                 }
                               }
+
                           | XrdCl::Final( [=]( const XRootDStatus &status )
                               { // finalize the pipeline by calling the user callback
                                 if( status.IsOK() )
@@ -807,10 +866,10 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     return ReadFromImpl<ChunkInfo>( *this, fn, offset, size, buffer, handler, timeout );
   }
 
-  XRootDStatus ZipArchive::WriteInto(const std::string &fn, uint64_t offset,
-  		uint32_t size, void *buffer, ResponseHandler *handler,
+  XRootDStatus ZipArchive::WriteFileInto(const std::string &fn, uint64_t offset,
+  		uint32_t size, uint32_t chksum, void *buffer, ResponseHandler *handler,
   		uint16_t timeout) {
-	  return WriteIntoImpl<ChunkInfo>( *this, fn, offset, size, buffer, handler, timeout);
+	  return WriteIntoImpl<ChunkInfo>( *this, fn, offset, size, chksum, buffer, handler, timeout);
   }
 
   //---------------------------------------------------------------------------

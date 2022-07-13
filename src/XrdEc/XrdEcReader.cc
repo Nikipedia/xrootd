@@ -28,9 +28,12 @@
 #include "XrdEc/XrdEcObjCfg.hh"
 #include "XrdEc/XrdEcThreadPool.hh"
 
-#include "XrdZip/XrdZipLFH.hh"
 #include "XrdZip/XrdZipCDFH.hh"
+#include "XrdZip/XrdZipLFH.hh"
 #include "XrdZip/XrdZipUtils.hh"
+
+#include "XrdCl/XrdClMessageUtils.hh"
+
 
 #include "XrdOuc/XrdOucCRC32C.hh"
 
@@ -372,6 +375,7 @@ namespace XrdEc
   {
     const size_t size = objcfg.plgr.size();
     std::vector<XrdCl::Pipeline> opens; opens.reserve( size );
+    std::vector<XrdCl::Pipeline> healthRead; healthRead.reserve(size);
     for( size_t i = 0; i < size; ++i )
     {
       // generate the URL
@@ -389,36 +393,51 @@ namespace XrdEc
       }
       else
         opens.emplace_back( OpenOnly( *dataarchs[url], url, false ) );
+
+      healthRead.emplace_back(ReadHealth(i));
     }
+
+
 
     auto pipehndl = [=]( const XrdCl::XRootDStatus &st )
                     { // set the central directories in ZIP archives (if we use metadata files)
-                      auto itr = dataarchs.begin();
-                      for( ; itr != dataarchs.end() ; ++itr )
-                      {
-                        const std::string &url    = itr->first;
-                        auto              &zipptr = itr->second;
-                        if( zipptr->openstage == XrdCl::ZipArchive::NotParsed )
-                          zipptr->SetCD( metadata[url] );
-                        else if( zipptr->openstage != XrdCl::ZipArchive::Done && !metadata.empty() )
-                          AddMissing( metadata[url] );
-                        auto itr = zipptr->cdmap.begin();
-                        for( ; itr != zipptr->cdmap.end() ; ++itr )
-                        {
-                          //std::cout << "File " << itr->first << " at " << url <<"\n" << std::flush;
-                          urlmap.emplace( itr->first, url );
-                          size_t blknb = fntoblk( itr->first );
-                          if( blknb > lstblk ) lstblk = blknb;
-                        }
-                      }
+        //if(!st.IsOK()) std::cout << "OpenArchive had some problem" << st.GetErrorMessage() << "\n" << std::flush;
+    	//std::cout << "Reader:open reached final pipehndl\n"<<std::flush;
+        auto itr = dataarchs.begin();
+		for (; itr != dataarchs.end(); ++itr) {
+			const std::string &url = itr->first;
+			auto &zipptr = itr->second;
+			if(zipptr->openstage != XrdCl::ZipArchive::Done) std::cout << "Problem with archive " << url << " " << zipptr->openstage << "\n" << std::flush;
+			if (zipptr->openstage == XrdCl::ZipArchive::NotParsed)
+				zipptr->SetCD(metadata[url]);
+			else if (zipptr->openstage != XrdCl::ZipArchive::Done
+					&& !metadata.empty())
+				AddMissing(metadata[url]);
+			auto itr = zipptr->cdmap.begin();
+			for (; itr != zipptr->cdmap.end(); ++itr) {
+				//std::cout << "File " << itr->first << " at " << url <<"\n" << std::flush;
+				try {
+					size_t blknb = fntoblk(itr->first);
+					urlmap.emplace(itr->first, url);
+					if (blknb > lstblk)
+						lstblk = blknb;
+				} catch (std::invalid_argument&) {
+					std::cout << "Invalid file name detected\n" << std::flush;
+				}
+			}
+		}
                       metadata.clear();
                       // call user handler
                       if( handler )
                         handler->HandleResponse( new XrdCl::XRootDStatus( st ), nullptr );
                     };
     // in parallel open the data files and read the metadata
+    std::cout << "Will start Reader :: Open pipeline\n"<<std::flush;
+
     XrdCl::Pipeline p = objcfg.nomtfile
-                      ? XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata ) | ReadSize( 0 ) | XrdCl::Final( pipehndl )
+                      ? XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata )
+                    		  //| XrdCl::Parallel(healthRead).AtLeast(objcfg.nbdata)
+                    		  | ReadSize( 0 ) | XrdCl::Final( pipehndl )
                       : XrdCl::Parallel( ReadMetadata( 0 ),
                                          XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata ) ) >> pipehndl;
     XrdCl::Async( std::move( p ), timeout );
@@ -436,8 +455,19 @@ namespace XrdEc
   {
     if( objcfg.nomtfile )
     {
-      if( offset + length > filesize )
-        length = filesize - offset;
+    	if(offset >= filesize){
+    		length = 0;
+    	}
+    	else if( offset + length > filesize )
+        {
+    	  length = filesize - offset;
+        //std::cout << "Reading past end " << length << " bytes remaining\n" << std::flush;
+        }
+    }
+
+    if(length == 0){
+    	ScheduleHandler( offset, 0, buffer, handler);
+    	return;
     }
 
     char *usrbuff = reinterpret_cast<char*>( buffer );
@@ -460,6 +490,7 @@ namespace XrdEc
       //-------------------------------------------------------------------
       // Make sure we operate on a valid block
       //-------------------------------------------------------------------
+      //std::cout << "Trying to lock blkmtx\n"<<std::flush;
       std::unique_lock<std::mutex> lck( blkmtx );
       if( !block || block->blkid != blkid )
         block = std::make_shared<block_t>( blkid, *this, objcfg );
@@ -470,6 +501,7 @@ namespace XrdEc
       lck.unlock();
       auto callback = [blk, rdctx, rdsize, rdmtx]( const XrdCl::XRootDStatus &st, uint32_t nbrd )
       {
+    	  //std::cout << "Trying to lock callback mutex\n"<<std::flush;
         std::unique_lock<std::mutex> lck( *rdmtx );
         //---------------------------------------------------------------------
         // update number of bytes left to be read (bytes requested not actually
@@ -543,10 +575,15 @@ namespace XrdEc
     else XrdCl::Async( XrdCl::Parallel( closes ) >> handler, timeout );
   }
 
+  void Reader::DebuggingRead(size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout)
+  {
+	  Read(blknb, strpnb, buffer, cb, timeout, true);
+  }
+
   //-------------------------------------------------------------------------
   // on-definition is not allowed here beforeiven stripes from given block
   //-------------------------------------------------------------------------
-  void Reader::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout )
+  void Reader::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout, bool exactControl )
   {
     // generate the file name (blknb/strpnb)
     std::string fn = objcfg.GetFileName( blknb, strpnb );
@@ -554,8 +591,10 @@ namespace XrdEc
     auto itr = urlmap.find( fn );
     if( itr == urlmap.end() )
     {
-      auto st = !IsMissing( fn ) ? XrdCl::XRootDStatus() :
-                XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
+      //auto st = !IsMissing( fn ) ? XrdCl::XRootDStatus() :
+      //          XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
+    	auto st = XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
+    	std::cout << "Call to callback because urlmap doesnt contain object " << fn << "\n" <<std::flush;
       ThreadPool::Instance().Execute( cb, st, 0 );
       return;
     }
@@ -568,6 +607,7 @@ namespace XrdEc
     auto st = zipptr->Stat( fn, info );
     if( !st.IsOK() )
     {
+    	std::cout << "Call to callback because Stat not ok\n" <<std::flush;
       ThreadPool::Instance().Execute( cb, st, 0 );
       return;
     }
@@ -575,31 +615,39 @@ namespace XrdEc
     delete info;
     // create a buffer for the data
     buffer.resize( objcfg.chunksize );
+    //std::cout << "Reader Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
+
+    //std::cout << "Issue read of " << fn << " with size " << rdsize<< "\n"<<std::flush;
     // issue the read request
-    XrdCl::Async( XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
-                    [zipptr, fn, cb, &buffer, this]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+    //XrdCl::Async(
+    XrdCl::Async(XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
+                    [zipptr, fn, cb, &buffer, exactControl, this, url, timeout]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
                     {
+    					//std::cout << "Async  Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
+
                       //---------------------------------------------------
                       // If read failed there's nothing to do, just pass the
                       // status to user callback
                       //---------------------------------------------------
                       if( !st.IsOK() )
                       {
-                        cb( st, 0 );
+                    	  std::cout << "Call to callback because Read failed\n" <<std::flush;
+                        cb( XrdCl::XRootDStatus(st.status, "Read failed"), 0 );
                         return;
                       }
                       //---------------------------------------------------
                       // Get the checksum for the read data
                       //---------------------------------------------------
                       uint32_t orgcksum = 0;
-                      auto s = zipptr->GetCRC32( fn, orgcksum );
+                      //auto s = zipptr->GetCRC32( fn, orgcksum );
+                      auto s = zipptr->GetCRC32(fn, orgcksum);
                       //---------------------------------------------------
                       // If we cannot extract the checksum assume the data
                       // are corrupted
                       //---------------------------------------------------
-                      if( !st.IsOK() )
+                      if( !s.IsOK() )
                       {
-                        cb( st, 0 );
+                        cb( XrdCl::XRootDStatus(s.status, s.code, s.errNo, "Chksum fail"), 0 );
                         return;
                       }
                       //---------------------------------------------------
@@ -608,17 +656,179 @@ namespace XrdEc
                       uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
                       if( orgcksum != cksum )
                       {
-                        cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errDataError ), 0 );
+                    	  std::string s((char*)ch.buffer, ch.length);
+                    	  std::cout << "Chksum of " << s<< " is different " << fn << ": " << cksum << " | " << orgcksum << "\n"<< std::flush;
+                        cb( XrdCl::XRootDStatus( XrdCl::stError, "Chksum unequal" ), 0 );
                         return;
                       }
+                      else{
+                    	  //std::cout << "Chksum identical " << fn << ": " << cksum << " | " << orgcksum << "\n"<< std::flush;
+                      }
+                      if (exactControl) {
+                    	  //std::cout << "Checking lfh of " << url << "\n" <<std::flush;
+							auto cditr = zipptr->cdmap.find(fn);
+							if (cditr == zipptr->cdmap.end())
+								{
+								cb(XrdCl::XRootDStatus(XrdCl::stError, "File not found."),0);
+								return;
+								}
 
-                      std::cout << "Read data with length " << (int) ch.length << "\n" << std::flush;
+
+							XrdZip::CDFH *cdfh =
+									zipptr->cdvec[cditr->second].get();
+							uint32_t offset = XrdZip::CDFH::GetOffset(*cdfh);
+							uint64_t cdOffset =
+									zipptr->zip64eocd ?
+											zipptr->zip64eocd->cdOffset :
+											zipptr->eocd->cdOffset;
+							uint64_t nextRecordOffset =
+									(cditr->second + 1 < zipptr->cdvec.size()) ?
+											XrdZip::CDFH::GetOffset(
+													*zipptr->cdvec[cditr->second
+															+ 1]) :
+											cdOffset;
+							auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
+									//- objcfg.chunksize;
+							std::shared_ptr<buffer_t> lfhbuf;
+							lfhbuf = std::make_shared<buffer_t>();
+							lfhbuf->reserve(readSize);
+							//std::cout << "Start pipeline\n" << std::flush;
+							XrdCl::Pipeline p = /*XrdCl::Open( zipptr->archive, url, XrdCl::OpenFlags::Read ) >>
+									[=]( XrdCl::XRootDStatus &st, XrdCl::StatInfo &info )
+						             {
+						               if( !st.IsOK() )
+						               {
+						            	   std::cout << st.code << st.GetErrorMessage() << "\n" << std::flush;
+						            	   cb(
+						            	   															XrdCl::XRootDStatus(
+						            	   																	XrdCl::stError,
+						            	   																	"Exception"),
+						            	   															0);
+						            	   return;
+						               }
+						             }
+									|*/ XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
+							                   [=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+							                   {
+								//std::cout << "LFH read operation\n" << std::flush;
+												if (st.IsOK()) {
+													try {
+														XrdZip::LFH lfh(
+																lfhbuf->data());
+												if (lfh.ZCRC32 != orgcksum) {
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+	"CRC!=CDFH"),
+	0);
+	return;
+}
+												if (lfh.compressedSize
+														!= cdfh->compressedSize) {
+													std::stringstream ss;
+													ss << "CompSize " << lfh.compressedSize << " != " << cdfh->compressedSize;
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+																	ss.str()),
+															0);
+													return;
+												}
+												if (lfh.compressionMethod
+														!= cdfh->compressionMethod
+														|| lfh.extraLength
+																!= cdfh->extraLength){
+													std::stringstream ss;
+													ss << "CompMethod "
+															<< lfh.compressionMethod
+															<< " != "
+															<< cdfh->compressionMethod
+															<< " extraLength "
+															<< lfh.extraLength
+															<< " != "
+															<< cdfh->extraLength;
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+																	ss.str()),
+															0);
+													return;
+												}
+														if( lfh.filename
+																!= cdfh->filename
+														|| lfh.filenameLength
+																!= cdfh->filenameLength){
+															std::stringstream ss;
+															ss << "filename!=CDFH" << lfh.filename << ":"<<cdfh->filename<< " lengths: " << lfh.filenameLength << ":" << cdfh->filenameLength << "\n" << std::flush;
+															cb(
+																	XrdCl::XRootDStatus(
+																			XrdCl::stError,
+																			ss.str()),
+																	0);
+															return;
+														}
+														if( lfh.generalBitFlag
+																!= cdfh->generalBitFlag
+														|| lfh.minZipVersion
+																!= cdfh->minZipVersion) {
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+																	"LFH!=CDFH"),
+															0);
+													return;
+												}
+												if (lfh.uncompressedSize
+														!= cdfh->uncompressedSize) {
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+																	"uncompSize!=CDFH"),
+															0);
+													return;
+												}
+														//---------------------------------------------------
+														// All is good, we can call now the user callback
+														//---------------------------------------------------
+														else {
+															//std::cout <<"LFH correct for file " << lfh.filename << "\n"<<std::flush;
+															cb(
+																	XrdCl::XRootDStatus(),
+																	ch.length);
+															return;
+														}
+													} catch (const std::exception &e) {
+
+													}
+													cb(
+															XrdCl::XRootDStatus(
+																	XrdCl::stError,
+																	XrdCl::errCorruptedHeader,
+																	0,
+																	"Couldnt parse lfh"),
+															0);
+													return;
+												} else {
+													cb(XrdCl::XRootDStatus(st.status, st.code, st.errNo, "ReadFrom err"), 0);
+																					return;
+												}
+											};
+							//| XrdCl::Close( zipptr->archive );
+							    Async( std::move( p ), timeout );
+							    return;
+						} else {
+							//---------------------------------------------------
+							// All is good, we can call now the user callback
+							//---------------------------------------------------
+							cb(XrdCl::XRootDStatus(), ch.length);
+							return;
+						}
+
+                      //std::cout << "Read data with length " << (int) ch.length << "\n" << std::flush;
                       //buffer.resize(ch.length);
-                      //---------------------------------------------------
-                      // All is good, we can call now the user callback
-                      //---------------------------------------------------
-                      cb( XrdCl::XRootDStatus(), ch.length );
-                    }, timeout );
+
+                    }, timeout);
+    //std::cout << "After Async start: Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
   }
 
   //-----------------------------------------------------------------------
@@ -690,11 +900,12 @@ namespace XrdEc
   //-----------------------------------------------------------------------
   XrdCl::Pipeline Reader::ReadSize( size_t index )
   {
+	std::cout << "Reading size now\n" << std::flush;
     std::string url = objcfg.GetDataUrl( index );
     return XrdCl::GetXAttr( dataarchs[url]->GetFile(), "xrdec.filesize" ) >>
-        [index, this]( XrdCl::XRootDStatus &st, std::string &size)
+        [index, this, url]( XrdCl::XRootDStatus &st, std::string &size)
         {
-          if( !st.IsOK() )
+          if( !st.IsOK() || this->dataarchs[url]->openstage != XrdCl::ZipArchive::Done)
           {
             //-------------------------------------------------------------
             // Check if we can recover the error or a diffrent location
@@ -703,8 +914,32 @@ namespace XrdEc
               XrdCl::Pipeline::Replace( ReadSize( index + 1 ) );
             return;
           }
+          try{
           filesize = std::stoull( size );
+          }
+          catch(std::invalid_argument &){
+        	  if( index + 1 < objcfg.plgr.size() )
+        	  XrdCl::Pipeline::Replace( ReadSize( index + 1 ) );
+          }
         };
+  }
+
+  XrdCl::Pipeline Reader::ReadHealth(size_t index){
+		  std::string url = objcfg.GetDataUrl( index );
+		  return XrdCl::GetXAttr( dataarchs[url]->GetFile(), "xrdec.unhealthy" ) >>
+	          [index, url, this]( XrdCl::XRootDStatus &st, std::string &damage)
+	          {
+	            if( !st.IsOK() )
+	            {
+	              //-------------------------------------------------------------
+	              // Check if we can recover the error or a diffrent location
+	              //-------------------------------------------------------------
+
+	              return;
+	            }
+	            int damaged = std::stoi( damage );
+	            if(damaged > 0) this->dataarchs[url]-> openstage = XrdCl::ZipArchive::Error;
+	          };
   }
 
   //-----------------------------------------------------------------------
@@ -735,8 +970,13 @@ namespace XrdEc
       uint32_t crc32val = objcfg.digest( 0, buffer, lfh.uncompressedSize );
       if( crc32val != lfh.ZCRC32 ) return false;
       // keep the metadata
-      std::string url = objcfg.GetDataUrl( std::stoull( lfh.filename ) );
-      metadata.emplace( url, buffer_t( buffer, buffer + lfh.uncompressedSize ) );
+      try{
+    	  std::string url = objcfg.GetDataUrl( std::stoull( lfh.filename ) );
+    	  metadata.emplace( url, buffer_t( buffer, buffer + lfh.uncompressedSize ) );
+      }
+      catch(const std::invalid_argument* e){
+    	  std::cout << "Invalid filename found";
+      }
       buffer += lfh.uncompressedSize;
       length -= lfh.uncompressedSize;
     }
@@ -772,7 +1012,9 @@ namespace XrdEc
     if( missing.count( fn ) ) return true;
     // if we don't have a metadata file and the chunk exceeds last chunk
     // also return true
-    if( objcfg.nomtfile && fntoblk( fn ) <= lstblk ) return true;
+    try{
+    if( objcfg.nomtfile && fntoblk( fn ) <= lstblk ) return true;}
+    catch(...){}
     // otherwise return false
     return false;
   }
