@@ -137,7 +137,7 @@ namespace XrdEc
     //-------------------------------------------------------------------------
     // Shuffle the servers so every block has a different placement
     //-------------------------------------------------------------------------
-    //static std::default_random_engine random_engine( std::chrono::system_clock::now().time_since_epoch().count() );
+    // make the shuffling reproducable!
     static std::default_random_engine random_engine( 100 );
 
     std::shared_ptr<sync_queue<size_t>> servers = std::make_shared<sync_queue<size_t>>();

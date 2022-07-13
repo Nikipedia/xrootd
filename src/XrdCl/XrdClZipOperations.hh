@@ -114,11 +114,7 @@ namespace XrdCl
         OpenFlags::Flags  flags   = std::get<FlagsArg>( this->args ).Get();
         uint16_t          timeout = pipelineTimeout < this->timeout ?
                                    pipelineTimeout : this->timeout;
-        XRootDStatus st = this->zip->OpenArchive( url, flags, handler, timeout );
-        if(!st.IsOK()){
-        	std::cout << "Couldn't open " << url << "\n" << std::flush;
-        }
-        return st;
+        return this->zip->OpenArchive( url, flags, handler, timeout );
       }
   };
 
