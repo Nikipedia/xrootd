@@ -46,28 +46,44 @@
 
 namespace XrdEc {
 
+struct ThreadEndSemaphore{
+	ThreadEndSemaphore(std::shared_ptr<XrdSysSemaphore> s) : sem(s) {}
+	~ThreadEndSemaphore(){std::cout << "Semaphore destroyed\n"<<std::flush;sem->Post();sem->Post();}
+	std::shared_ptr<XrdSysSemaphore> sem;
+};
+
 class RepairTool {
+
 	//friend class XrdEc::Reader;
 	//friend class XrdCl::ZipArchive;
 	//friend bool error_correction(std::shared_ptr<block_t>&, std::shared_ptr<RepairTool>);
 public:
 	RepairTool(ObjCfg &objcfg) :
-			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0), chunksRepaired(0), checkAfterRepair(false) {
+			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0),
+			checkAfterRepair(false){
 		currentBlockChecked = 0;
+		redirectMapOffset = 0;
+		chunksRepaired = 0;
+		finishedRepair = false;
 	}
 	virtual ~RepairTool() {
 	}
-	std::unique_ptr<ObjCfg> RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
+	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
+	uint64_t chunksRepaired;
 private:
 	void CheckBlock();
+	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem);
+	void InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr);
+	void CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t blkid, uint16_t strpid);
 	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer );
 	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
 	void OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 			uint16_t timeout = 0);
-	void CloseAllArchives(uint16_t timeout = 0);
+	void CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
 	XrdZip::buffer_t GetMetadataBuffer();
-	void AddMissing(const buffer_t &cdbuff, const std::string &url);
+	void ReplaceURL(const std::string &url);
+	void AddMissing(const buffer_t &cdbuff);
 	XrdCl::Pipeline ReadMetadata( size_t index );
     //-----------------------------------------------------------------------
     //! Read size from xattr
@@ -76,7 +92,9 @@ private:
     //-----------------------------------------------------------------------
     XrdCl::Pipeline ReadSize( size_t index );
 
-    void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
+    std::vector<XrdCl::Pipeline> ReadHealth();
+
+    void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
 
     bool IsMissing(const std::string &fn);
 
@@ -102,7 +120,10 @@ private:
 	std::mutex blkmtx;    //> mutex guarding the block from parallel access
 	size_t lstblk;    //> last block number
 	uint64_t filesize;  //> file size (obtained from xattr)
-	uint64_t chunksRepaired;
+
+	// for replacing URLs
+	std::mutex urlMutex;
+
 
     int redirectMapOffset;
 

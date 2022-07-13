@@ -43,13 +43,44 @@
 #include "XrdCl/XrdClPostMaster.hh"
 #include "XrdCl/XrdClDefaultEnv.hh"
 
+
+#include <iostream>
+
 namespace XrdCl
 {
+
+
 
   template<bool HasHndl> class Operation;
 
   class Pipeline;
 
+  /*class ClResponseJob : public Job
+  	{
+	  template<bool> friend class Operation;
+      public:
+        //-----------------------------------------------------------------------
+        // Constructor
+        //-----------------------------------------------------------------------
+        ClResponseJob( ResponseHandler *handler,
+                     XRootDStatus    *status,
+                     AnyObject       *response ):
+          pHandler( handler ), pStatus( status ), pResponse( response )
+        {
+        }
+
+        virtual void Run( void *arg )
+        {
+          pHandler->HandleResponse( pStatus, pResponse );
+          delete this;
+        }
+
+      private:
+
+        ResponseHandler *pHandler;  //< user callback
+        XRootDStatus    *pStatus;   //< operation status
+        AnyObject       *pResponse; //< user response
+    };*/
 
   //----------------------------------------------------------------------------
   //! Type of the recovery function to be provided by the user
@@ -191,6 +222,8 @@ namespace XrdCl
       friend class Pipeline;
       friend class PipelineHandler;
 
+      friend class ClResponseJob;
+
     public:
 
       //------------------------------------------------------------------------
@@ -263,6 +296,7 @@ namespace XrdCl
         XRootDStatus st;
         try
         {
+        	//std::cout << "In method XrdClOperation::Run, thread id: " << std::this_thread::get_id()<<"\n" << std::flush;
           st = RunImpl( h, timeout );
         }
         catch( const operation_expired& ex )
@@ -277,7 +311,6 @@ namespace XrdCl
         {
           st = XRootDStatus( stError, errInternal, 0, ex.what() );
         }
-
         if( !st.IsOK() ){
           ResponseJob *job = new ResponseJob(h, new XRootDStatus(st), 0, nullptr);
           DefaultEnv::GetPostMaster()->GetJobManager()->QueueJob(job);
@@ -772,6 +805,8 @@ namespace XrdCl
       //------------------------------------------------------------------------
       uint16_t timeout;
     };
+
+
 }
 
 #endif // __XRD_CL_OPERATIONS_HH__

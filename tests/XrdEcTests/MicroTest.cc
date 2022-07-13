@@ -67,7 +67,11 @@ class MicroTest: public CppUnit::TestCase
       CPPUNIT_TEST( AlignedRepairNoHostTest );
       CPPUNIT_TEST( AlignedRepairOneChunkTest);
       CPPUNIT_TEST( RandomizedRepairTest );
+      CPPUNIT_TEST( RepairNoCorruptionTest );
     CPPUNIT_TEST_SUITE_END();
+
+    int testedChunkCount;
+	int failedReads;
 
     void Init( bool usecrc32c );
 
@@ -98,14 +102,23 @@ class MicroTest: public CppUnit::TestCase
     /*
      * corruption type: 0 = missing host, 1 = single corrupt, 2 = random corrupt
      */
-    inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType){
+    inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType, bool mustHaveErrors = true){
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
+    	//	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
+    	//uint64_t seed = 1657107864779205389;
+    	//uint64_t seed = 1657143896338803002;
 
+    	//last error:
+    	uint64_t seed = 1657159841384369157;
     	InitRepair(usecrc32c);
+    	//uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
+    	//uint64_t seed2 = 1657107864779507488;
+    	//uint64_t seed2 = 1657143896339144553;
 
-    	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
+    	//last error:
+    	uint64_t seed2= 1657159841384665714;
 
-    	std::cout << "Random Seed: " << seed << "\n" << std::flush;
+    	std::cout << "Random Seed FileGen: " << seed << "Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
 		// run the test
     	if(corruptionType == 2)
@@ -114,21 +127,31 @@ class MicroTest: public CppUnit::TestCase
     		AlignedWriteRaw();
     	}
 
+    	Verify(false);
+
     	switch(corruptionType){
     	case 0: UrlNotReachable(4); break;
     	case 1: CorruptChunk(1,1); break;
-    	case 2: CorruptRandom(seed); break;
+    	case 2: CorruptRandom(seed2); break;
     	default: break;
     	}
+    	if(mustHaveErrors)
+    		VerifyAnyErrorExists();
 
-    	VerifyAnyErrorExists();
-
-    	auto oldPlgr = objcfg->plgr;
+    	auto oldPlgr = std::vector<std::string>(objcfg->plgr);
 
 		XrdEc::RepairTool r(*objcfg);
-		objcfg = r.RepairFile(false, nullptr);
+		// shouldnt affect the repair tool's objcfg object since it was copied
+		//objcfg.reset();
+		//std::shared_ptr<ObjCfg> updatedConfig = r.RepairFile(false, nullptr);
+		r.RepairFile(false, nullptr);
+		//objcfg = std::make_unique<ObjCfg>(*updatedConfig);
+		// shouldn't affect the updated objcfg since its a copy
+		//updatedConfig.reset();
+		if(mustHaveErrors)
+			CPPUNIT_ASSERT(r.chunksRepaired > 0);
 
-		std::cout<<"Repaired file, starting verification";
+		std::cout<<"Repaired file, starting verification\n"<<std::flush;
 
 		Verify(false);
 		// clean up
@@ -150,9 +173,11 @@ class MicroTest: public CppUnit::TestCase
     }
 
     inline void RandomizedRepairTest(){
-    	for(int u = 0; u < 10; u++){
     	AlignedRepairTestImpl(true, 2);
-    	}
+    }
+
+    inline void RepairNoCorruptionTest(){
+    	AlignedRepairTestImpl(true, 3, false);
     }
 
     inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
@@ -251,6 +276,7 @@ class MicroTest: public CppUnit::TestCase
 
       for( size_t i = 0; i < 10; ++i )
         RandomReadVerify(repairAllow);
+      std::cout << "All reads verified"<<std::flush;
     }
 
     void ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd = std::numeric_limits<uint64_t>::max() );
@@ -290,11 +316,16 @@ class MicroTest: public CppUnit::TestCase
     void UrlNotReachable( size_t index );
     void UrlReachable( size_t index );
 
+
+
+
   private:
 
     void AlignedWriteRaw();
 
     void AlignedRandomWriteRaw(uint64_t seed);
+
+    static callback_t read_callback(MicroTest *self, size_t blkid, size_t strpid);
 
     void copy_rawdata( char *buffer, size_t size )
     {
@@ -302,6 +333,8 @@ class MicroTest: public CppUnit::TestCase
       const char *end   = begin + size;
       std::copy( begin, end, std::back_inserter( rawdata ) );
     }
+
+
 
     std::string datadir;
     std::unique_ptr<ObjCfg> objcfg;
@@ -322,7 +355,7 @@ CPPUNIT_TEST_SUITE_REGISTRATION( MicroTest );
 
 void MicroTest::Init( bool usecrc32c )
 {
-  objcfg.reset( new ObjCfg( "test.txt", nbdata, nbparity, chsize, usecrc32c, false ) );
+  objcfg.reset( new ObjCfg( "test.txt", nbdata, nbparity, chsize, usecrc32c, true ) );
   rawdata.clear();
 
   char cwdbuff[1024];
@@ -346,7 +379,7 @@ void MicroTest::Init( bool usecrc32c )
 
 void MicroTest::InitRepair( bool usecrc32c )
 {
-  objcfg.reset( new ObjCfg( "test.txt", nbdata, nbparity, chsize, usecrc32c, false ) );
+  objcfg.reset( new ObjCfg( "test.txt", nbdata, nbparity, chsize, usecrc32c, true ) );
   rawdata.clear();
 
   char cwdbuff[1024];
@@ -437,6 +470,11 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	// get the CD buffer
 	std::string fn = objcfg->GetFileName(0, host);
 	std::string url = reader.urlmap[fn];
+	auto zipptr = reader.dataarchs[url];
+	uint64_t cdOffset =
+			zipptr->zip64eocd ?
+					zipptr->zip64eocd->cdOffset : zipptr->eocd->cdOffset;
+	uint64_t cdLength = zipptr->zip64eocd? zipptr->zip64eocd->cdSize:zipptr->eocd->cdSize;
 
 	// close the data object
 	XrdCl::SyncResponseHandler handler2;
@@ -446,12 +484,18 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(*status);
 	delete status;
 
+	std::stringstream ss;
+	ss << "cp " << url << " " << url << "_noncorrupt";
+	std::string s = ss.str();
+	system(s.data());
+
 	// now corrupt the host
 	XrdCl::File f;
-	XrdCl::XRootDStatus status2 = f.Open(url, XrdCl::OpenFlags::Write);
+	XrdCl::XRootDStatus status2 = f.Open(url, XrdCl::OpenFlags::Update);
 	CPPUNIT_ASSERT_XRDST(status2);
 
-	std::uniform_int_distribution<uint32_t> offsetRandom(0, rawdata.size() / nbdata);
+
+	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength);
 	uint64_t offset = offsetRandom(random_engine);
 
 	std::uniform_int_distribution<uint32_t> lengthRandom(1, chsize * 4);
@@ -460,18 +504,18 @@ void MicroTest::CorruptRandom(uint64_t seed){
 
 	std::uniform_int_distribution<uint32_t> letter( 0, 25 );
 
-	char buffer[size];
+	std::vector<char> buffer;
 
-	std::cout << "Corrupting host " << (int)host<< " at offset " << (int)offset << " with size " << (int)size << ":\n" << std::flush;
+	std::cout << "Corrupting host " << url << " at offset " << (int)offset << " with size " << (int)size << ":\n" << std::flush;
 
 	while(size > 0){
 		uint32_t letterAdd = letter(random_engine);
-		memset( buffer + size - 1, 'A' + letterAdd, 1);
-		std::cout << 'A'+letterAdd;
+		buffer.push_back('A' + letterAdd);
+		std::cout << (char)('A'+letterAdd);
 		size -= 1;
 	}
 	std::cout << "\n" << std::flush;
-	status2 = f.Write(offset, writeSize, buffer);
+	status2 = f.Write(offset, writeSize, buffer.data());
 	CPPUNIT_ASSERT_XRDST(status2);
 	status2 = f.Close();
 	CPPUNIT_ASSERT_XRDST(status2);
@@ -510,6 +554,23 @@ void MicroTest::CorruptedReadVerify()
   Corrupted1stBlkReadVerify(true);
 }
 
+callback_t MicroTest::read_callback(MicroTest *self, size_t blkid, size_t strpid) {
+	return [self, blkid, strpid](const XrdCl::XRootDStatus &st,
+			uint32_t) mutable {
+			if (st.IsOK()){
+				self->testedChunkCount++;
+				//std::cout << "successful read of block " << (int)blkid << ", Stripe "<<(int)strpid<< "\n"<<std::flush;
+			}
+			else{
+				self->failedReads++;
+				std::cout << "Fail in block " << (int)blkid << ", Stripe "<<(int)strpid<<": "<< st.code << ": "<< st.GetErrorMessage()<< "\n" << std::flush;
+				if(st.code == XrdCl::errCorruptedHeader){
+					std::cout << "Corrupted metadata in block " << (int)blkid << ", Stripe "<<(int)strpid<< "\n" << std::flush;
+				}
+			}
+		};
+}
+
 void MicroTest::VerifyAnyErrorExists(){
 	Reader reader(*objcfg);
 	// open the data object
@@ -519,6 +580,7 @@ void MicroTest::VerifyAnyErrorExists(){
 	XrdCl::XRootDStatus *status = handler1.GetStatus();
 	//CPPUNIT_ASSERT_XRDST(*status);
 	if(!status->IsOK()){
+		std::cout << "Archives can't be opened as desired";
 		return;
 	}
 
@@ -538,6 +600,7 @@ void MicroTest::VerifyAnyErrorExists(){
 		h.WaitForResponse();
 		status = h.GetStatus();
 		if(!status->IsOK()){
+			std::cout << "Couldn't read " << (int)rdsize << " at offset " << (int) rdoff << "\n"<< std::flush;
 			errorFound = true;
 			delete status;
 			break;
@@ -554,6 +617,8 @@ void MicroTest::VerifyAnyErrorExists(){
 		if (rawoff + rawsz > rawdata.size())
 			rawsz = rawdata.size() - rawoff;
 		std::string expected(rawdata.data() + rawoff, rawsz);
+		std::cout << result << " - " << expected << "\n" << std::flush;
+
 		// make sure the expected and actual results are the same
 		if(result != expected){
 			errorFound = true;
@@ -564,6 +629,29 @@ void MicroTest::VerifyAnyErrorExists(){
 		total_bytesrd += bytesrd;
 	} while (bytesrd == rdsize && total_bytesrd < maxrd && !errorFound);
 	delete[] rdbuff;
+
+	// now check parity stripes as well
+	if(!errorFound){
+		testedChunkCount = 0;
+		int neededChunks = 0;
+		failedReads = 0;
+		uint64_t numBlocks = ceil((rawdata.size() / (float)chsize)/nbdata);
+		std::vector<std::shared_ptr<buffer_t>> buffers;
+		for(size_t blkid = 0; blkid < numBlocks; blkid++){
+			for(size_t strpid = 0; strpid < nbdata+nbparity; strpid++){
+				neededChunks++;
+				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
+				buffer->reserve(chsize);
+				buffers.push_back(buffer);
+				reader.DebuggingRead(blkid, strpid, *buffer, MicroTest::read_callback(this, blkid, strpid));
+			}
+		}
+		while(testedChunkCount + failedReads < neededChunks){
+			sleep(0.05);
+		}
+
+		if(failedReads > 0) errorFound = true;
+	}
 
 	// close the data object
 	XrdCl::SyncResponseHandler handler2;
@@ -576,8 +664,11 @@ void MicroTest::VerifyAnyErrorExists(){
 	CPPUNIT_ASSERT(errorFound);
 }
 
+
+
 void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
 {
+	std::cout << "Read Verification started\n" << std::flush;
   Reader reader( *objcfg );
   // open the data object
   XrdCl::SyncResponseHandler handler1;
@@ -624,6 +715,32 @@ void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
   }
   while( bytesrd == rdsize && total_bytesrd < maxrd );
   delete[] rdbuff;
+  bool errorFound = false;
+  if(!repairAllow){
+	  // now check parity stripes as well
+	  		testedChunkCount = 0;
+	  		int neededChunks = 0;
+	  		failedReads = 0;
+	  		uint64_t numBlocks = ceil((rawdata.size() / (float)chsize)/nbdata);
+	  		std::vector<std::shared_ptr<buffer_t>> buffers;
+	  		for(size_t blkid = 0; blkid < numBlocks; blkid++){
+	  			for(size_t strpid = 0; strpid < nbdata+nbparity; strpid++){
+	  				neededChunks++;
+	  				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
+	  				buffer->reserve(chsize);
+	  				buffers.push_back(buffer);
+	  				reader.DebuggingRead(blkid, strpid, *buffer, MicroTest::read_callback(this, blkid, strpid));
+	  			}
+	  		}
+	  		while(testedChunkCount + failedReads < neededChunks){
+	  			sleep(0.05);
+	  		}
+	  		buffers.clear();
+
+	  		if(failedReads > 0) errorFound = true;
+  }
+
+  CPPUNIT_ASSERT(!errorFound);
  
   // close the data object
   XrdCl::SyncResponseHandler handler2;
