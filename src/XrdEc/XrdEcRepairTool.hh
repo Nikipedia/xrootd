@@ -54,9 +54,6 @@ struct ThreadEndSemaphore{
 
 class RepairTool {
 
-	//friend class XrdEc::Reader;
-	//friend class XrdCl::ZipArchive;
-	//friend bool error_correction(std::shared_ptr<block_t>&, std::shared_ptr<RepairTool>);
 public:
 	RepairTool(ObjCfg &objcfg) :
 			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0),
