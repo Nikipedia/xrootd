@@ -387,6 +387,7 @@ namespace XrdEc
       // generate the URL
       std::string url = objcfg.GetDataUrl( i );
       archiveIndices.emplace(url, i);
+
       dataarchs.emplace( url, std::make_shared<XrdCl::ZipArchive>(
           Config::Instance().enable_plugins ) );
       // open the archive
@@ -404,13 +405,10 @@ namespace XrdEc
 
     auto pipehndl = [=]( const XrdCl::XRootDStatus &st )
                     { // set the central directories in ZIP archives (if we use metadata files)
-        //if(!st.IsOK()) std::cout << "OpenArchive had some problem" << st.GetErrorMessage() << "\n" << std::flush;
-    	//std::cout << "Reader:open reached final pipehndl\n"<<std::flush;
         auto itr = dataarchs.begin();
 		for (; itr != dataarchs.end(); ++itr) {
 			const std::string &url = itr->first;
 			auto &zipptr = itr->second;
-			if(zipptr->openstage != XrdCl::ZipArchive::Done) std::cout << "Problem with archive " << url << " " << zipptr->openstage << "\n" << std::flush;
 			if (zipptr->openstage == XrdCl::ZipArchive::NotParsed)
 				zipptr->SetCD(metadata[url]);
 			else if (zipptr->openstage != XrdCl::ZipArchive::Done
@@ -418,7 +416,6 @@ namespace XrdEc
 				AddMissing(metadata[url]);
 			auto itr = zipptr->cdmap.begin();
 			for (; itr != zipptr->cdmap.end(); ++itr) {
-				//std::cout << "File " << itr->first << " at " << url <<"\n" << std::flush;
 				try {
 					size_t blknb = fntoblk(itr->first);
 					urlmap.emplace(itr->first, url);
@@ -435,8 +432,6 @@ namespace XrdEc
                         handler->HandleResponse( new XrdCl::XRootDStatus( st ), nullptr );
                     };
     // in parallel open the data files and read the metadata
-    std::cout << "Will start Reader :: Open pipeline\n"<<std::flush;
-
     XrdCl::Pipeline p = objcfg.nomtfile
                       ? XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata )
                     		  //| XrdCl::Parallel(healthRead).AtLeast(objcfg.nbdata)
@@ -490,7 +485,6 @@ namespace XrdEc
       //-------------------------------------------------------------------
       // Make sure we operate on a valid block
       //-------------------------------------------------------------------
-      //std::cout << "Trying to lock blkmtx\n"<<std::flush;
       std::unique_lock<std::mutex> lck( blkmtx );
       if( !block || block->blkid != blkid )
         block = std::make_shared<block_t>( blkid, *this, objcfg );
@@ -501,8 +495,7 @@ namespace XrdEc
       lck.unlock();
       auto callback = [blk, rdctx, rdsize, rdmtx]( const XrdCl::XRootDStatus &st, uint32_t nbrd )
       {
-    	  //std::cout << "Trying to lock callback mutex\n"<<std::flush;
-        std::unique_lock<std::mutex> lck( *rdmtx );
+    	  std::unique_lock<std::mutex> lck( *rdmtx );
         //---------------------------------------------------------------------
         // update number of bytes left to be read (bytes requested not actually
         // read)
@@ -594,8 +587,7 @@ namespace XrdEc
       //auto st = !IsMissing( fn ) ? XrdCl::XRootDStatus() :
       //          XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
     	auto st = XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
-    	std::cout << "Call to callback because urlmap doesnt contain object " << fn << "\n" <<std::flush;
-      ThreadPool::Instance().Execute( cb, st, 0 );
+    	ThreadPool::Instance().Execute( cb, st, 0 );
       return;
     }
     // get the URL of the ZIP archive with the respective data
@@ -607,32 +599,24 @@ namespace XrdEc
     auto st = zipptr->Stat( fn, info );
     if( !st.IsOK() )
     {
-    	std::cout << "Call to callback because Stat not ok\n" <<std::flush;
-      ThreadPool::Instance().Execute( cb, st, 0 );
+    	ThreadPool::Instance().Execute( cb, st, 0 );
       return;
     }
     uint32_t rdsize = info->GetSize();
     delete info;
     // create a buffer for the data
     buffer.resize( objcfg.chunksize );
-    //std::cout << "Reader Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
-
-    //std::cout << "Issue read of " << fn << " with size " << rdsize<< "\n"<<std::flush;
     // issue the read request
-    //XrdCl::Async(
     XrdCl::Async(XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
                     [zipptr, fn, cb, &buffer, exactControl, this, url, timeout]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
                     {
-    					//std::cout << "Async  Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
-
                       //---------------------------------------------------
                       // If read failed there's nothing to do, just pass the
                       // status to user callback
                       //---------------------------------------------------
                       if( !st.IsOK() )
                       {
-                    	  std::cout << "Call to callback because Read failed\n" <<std::flush;
-                        cb( XrdCl::XRootDStatus(st.status, "Read failed"), 0 );
+                    	  cb( XrdCl::XRootDStatus(st.status, "Read failed"), 0 );
                         return;
                       }
                       //---------------------------------------------------
@@ -656,17 +640,12 @@ namespace XrdEc
                       uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
                       if( orgcksum != cksum )
                       {
-                    	  std::string s((char*)ch.buffer, ch.length);
-                    	  std::cout << "Chksum of " << s<< " is different " << fn << ": " << cksum << " | " << orgcksum << "\n"<< std::flush;
-                        cb( XrdCl::XRootDStatus( XrdCl::stError, "Chksum unequal" ), 0 );
+                    	  cb( XrdCl::XRootDStatus( XrdCl::stError, "Chksum unequal" ), 0 );
                         return;
                       }
-                      else{
-                    	  //std::cout << "Chksum identical " << fn << ": " << cksum << " | " << orgcksum << "\n"<< std::flush;
-                      }
+                      // optionally also checks LFH against CDFH
                       if (exactControl) {
-                    	  //std::cout << "Checking lfh of " << url << "\n" <<std::flush;
-							auto cditr = zipptr->cdmap.find(fn);
+                    	  auto cditr = zipptr->cdmap.find(fn);
 							if (cditr == zipptr->cdmap.end())
 								{
 								cb(XrdCl::XRootDStatus(XrdCl::stError, "File not found."),0);
@@ -688,29 +667,12 @@ namespace XrdEc
 															+ 1]) :
 											cdOffset;
 							auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
-									//- objcfg.chunksize;
 							std::shared_ptr<buffer_t> lfhbuf;
 							lfhbuf = std::make_shared<buffer_t>();
 							lfhbuf->reserve(readSize);
-							//std::cout << "Start pipeline\n" << std::flush;
-							XrdCl::Pipeline p = /*XrdCl::Open( zipptr->archive, url, XrdCl::OpenFlags::Read ) >>
-									[=]( XrdCl::XRootDStatus &st, XrdCl::StatInfo &info )
-						             {
-						               if( !st.IsOK() )
-						               {
-						            	   std::cout << st.code << st.GetErrorMessage() << "\n" << std::flush;
-						            	   cb(
-						            	   															XrdCl::XRootDStatus(
-						            	   																	XrdCl::stError,
-						            	   																	"Exception"),
-						            	   															0);
-						            	   return;
-						               }
-						             }
-									|*/ XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
+							XrdCl::Pipeline p =  XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
 							                   [=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
 							                   {
-								//std::cout << "LFH read operation\n" << std::flush;
 												if (st.IsOK()) {
 													try {
 														XrdZip::LFH lfh(
@@ -791,7 +753,6 @@ namespace XrdEc
 														// All is good, we can call now the user callback
 														//---------------------------------------------------
 														else {
-															//std::cout <<"LFH correct for file " << lfh.filename << "\n"<<std::flush;
 															cb(
 																	XrdCl::XRootDStatus(),
 																	ch.length);
@@ -813,7 +774,6 @@ namespace XrdEc
 																					return;
 												}
 											};
-							//| XrdCl::Close( zipptr->archive );
 							    Async( std::move( p ), timeout );
 							    return;
 						} else {
@@ -823,13 +783,8 @@ namespace XrdEc
 							cb(XrdCl::XRootDStatus(), ch.length);
 							return;
 						}
-
-                      //std::cout << "Read data with length " << (int) ch.length << "\n" << std::flush;
-                      //buffer.resize(ch.length);
-
                     }, timeout);
-    //std::cout << "After Async start: Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
-  }
+    }
 
   //-----------------------------------------------------------------------
   // Read metadata for the object
@@ -900,7 +855,6 @@ namespace XrdEc
   //-----------------------------------------------------------------------
   XrdCl::Pipeline Reader::ReadSize( size_t index )
   {
-	std::cout << "Reading size now\n" << std::flush;
     std::string url = objcfg.GetDataUrl( index );
     return XrdCl::GetXAttr( dataarchs[url]->GetFile(), "xrdec.filesize" ) >>
         [index, this, url]( XrdCl::XRootDStatus &st, std::string &size)

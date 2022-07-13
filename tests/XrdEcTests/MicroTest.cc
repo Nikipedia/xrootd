@@ -510,6 +510,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 			zipptr->zip64eocd ?
 					zipptr->zip64eocd->cdOffset : zipptr->eocd->cdOffset;
 	uint64_t cdLength = zipptr->zip64eocd? zipptr->zip64eocd->cdSize:zipptr->eocd->cdSize;
+	uint64_t eocdLength = XrdZip::EOCD::eocdBaseSize;
 
 	// close the data object
 	XrdCl::SyncResponseHandler handler2;
@@ -530,7 +531,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(status2);
 
 
-	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength);
+	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength + eocdLength);
 	uint64_t offset = offsetRandom(random_engine);
 
 	std::uniform_int_distribution<uint32_t> lengthRandom(1, chsize * 4);

@@ -319,19 +319,15 @@ namespace XrdEc
   	                      uint16_t                  timeout,
 						  bool 						doRepair = true)
   	    {
-  	    	//std::cout << "Trying to lock block's self mtx in read\n"<<std::flush;
-  	    	//std::cout << "Thread id:" << std::this_thread::get_id()<<"\n"<<std::flush;
-  	      std::unique_lock<std::mutex> lck( self->mtx );
+  	    	std::unique_lock<std::mutex> lck( self->mtx );
 
   	      //---------------------------------------------------------------------
   	      // The cache is empty, we need to load the data
   	      //---------------------------------------------------------------------
   	      if( self->state[strpid] == Empty )
   	      {
-  	    	  //std::cout << "Acquired lock, call read\n"<<std::flush;
-  	        self->reader.Read( self->blkid, strpid, self->stripes[strpid],
+  	    	  self->reader.Read( self->blkid, strpid, self->stripes[strpid],
   	                           read_callback( self, strpid, doRepair ), timeout );
-  	        //std::cout << "Returned from read\n"<<std::flush;
   	        self->state[strpid] = Loading;
   	      }
   	      //---------------------------------------------------------------------
@@ -368,7 +364,6 @@ namespace XrdEc
   	        if( offset + size > self->stripes[strpid].size() )
   	          size = self->stripes[strpid].size() - offset;
   	        memcpy( usrbuff, self->stripes[strpid].data() + offset, size );
-  	        //std::cout << "Size of read: " << (int) size << "\n" << std::flush;
   	        usrcb( XrdCl::XRootDStatus(), size );
   	        return;
   	      }
@@ -476,10 +471,7 @@ namespace XrdEc
   	    {
   	      return [self, strpid, allowRepair]( const XrdCl::XRootDStatus &st, uint32_t) mutable
   	             {
-  	    	//std::cout << "Trying to lock block's self mutex in callback\n"<<std::flush;
-  	    	//std::cout << "Callback Thread id:" << std::this_thread::get_id() <<"\n"<< std::flush;
-  	    	       std::unique_lock<std::mutex> lck( self->mtx );
-  	               //std::cout << "Locked block's self mutex successfully\n" << std::flush;
+  	    	std::unique_lock<std::mutex> lck( self->mtx );
   	               self->state[strpid] = st.IsOK() ? Valid : Missing;
   	               if(allowRepair){
   	               //------------------------------------------------------------
@@ -558,7 +550,6 @@ namespace XrdEc
   	          else if( offset + size > stripe.size() )
   	            size = stripe.size() - offset;
   	          memcpy( usrbuff, stripe.data() + offset, size );
-  	          //std::cout << "Size of pending answer: " << (int)size << "\n" << std::flush;
   	          nbrd = size;
   	        }
   	        //---------------------------------------------------------------------
