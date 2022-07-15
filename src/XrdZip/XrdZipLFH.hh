@@ -68,9 +68,8 @@ namespace XrdZip
     //-------------------------------------------------------------------------
     //! Constructor from buffer
     //-------------------------------------------------------------------------
-    LFH( const char *buffer, const uint64_t bufferSize = 0 )
+    LFH( const char *buffer )
     {
-    	if(bufferSize > 0 && bufferSize < (uint64_t)lfhBaseSize) throw bad_data();
       // check if the buffer contains a LFH record
       uint32_t signature = 0;
       from_buffer( signature, buffer );
@@ -85,8 +84,6 @@ namespace XrdZip
       from_buffer( uncompressedSize, buffer );
       from_buffer( filenameLength, buffer );
       from_buffer( extraLength, buffer );
-
-      if(bufferSize > 0 && (uint64_t)(lfhBaseSize + filenameLength + extraLength) > bufferSize) throw bad_data();
       // parse the filename
       filename.assign( buffer, filenameLength );
       buffer += filenameLength;
