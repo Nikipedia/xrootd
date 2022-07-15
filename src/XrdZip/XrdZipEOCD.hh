@@ -49,9 +49,9 @@ namespace XrdZip
     }
 
     //-------------------------------------------------------------------------
-    //! Constructor from buffer
+    //! Constructor from buffer (optional argument buffer length)
     //-------------------------------------------------------------------------
-    EOCD( const char *buffer )
+    EOCD( const char *buffer, uint32_t maxSize = 0 )
     {
       nbDisk        = *reinterpret_cast<const uint16_t*>( buffer + 4 );
       nbDiskCd      = *reinterpret_cast<const uint16_t*>( buffer + 6 );
@@ -60,8 +60,11 @@ namespace XrdZip
       cdSize        = *reinterpret_cast<const uint32_t*>( buffer + 12 );
       cdOffset      = *reinterpret_cast<const uint32_t*>( buffer + 16 );
       commentLength = *reinterpret_cast<const uint16_t*>( buffer + 20 );
-      comment       = std::string( buffer + 22, commentLength );
+      if(maxSize > 0 && (uint32_t)(eocdBaseSize + commentLength) > maxSize){
+          	  throw bad_data();
+            }
 
+      comment = std::string( buffer + 22, commentLength );
       eocdSize = eocdBaseSize + commentLength;
       useZip64= false;
     }
