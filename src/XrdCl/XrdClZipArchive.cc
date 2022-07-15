@@ -316,10 +316,17 @@ namespace XrdCl
                                                             "End-of-central-directory signature not found." );
                                         Pipeline::Stop( error );
                                       }
+                                      try{
                                       eocd.reset( new EOCD( eocdBlock ) );
                                       log->Dump( ZipMsg, "[0x%x] EOCD record parsed: %s", this,
                                                          eocd->ToString().c_str() );
-
+                                      if(eocd->cdOffset > archsize || eocd->cdOffset + eocd->cdSize > archsize) throw bad_data();
+                                      }
+                                      catch(const bad_data &ex){
+                                    	  XRootDStatus error( stError, errDataError, 0,
+                                    	               "End-of-central-directory signature corrupted." );
+                                    	  Pipeline::Stop( error );
+                                      }
                                       // Do we have the whole archive?
                                       if( chunk.length == archsize )
                                       {
