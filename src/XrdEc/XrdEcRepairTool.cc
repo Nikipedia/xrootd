@@ -92,6 +92,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
     	std::cout<<"Recovery impossible\n"<<std::flush;
       std::for_each( self->state.begin(), self->state.end(),
                      []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
+      writer->repairFailed = true;
       return false;
     }
     //---------------------------------------------------------------------
@@ -110,6 +111,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       {
         std::for_each( self->state.begin(), self->state.end(),
                        []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
+        writer->repairFailed = true;
         return false;
       }
       //-------------------------------------------------------------------
@@ -127,7 +129,14 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       {
         if( self->state[strpid] != block_t::Recovering ) continue;
         // Write new content to disk
-        writer->WriteChunk(self, strpid);
+        auto st = writer->WriteChunk(self, strpid);
+        if(!st.IsOK()){
+        	std::cout<<"Writing to archive failed\n"<<std::flush;
+        	      std::for_each( self->state.begin(), self->state.end(),
+        	                     []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
+        	      writer->repairFailed = true;
+        	      return false;
+        }
         // TODO: Check this code
         if(writer->checkAfterRepair){
         	writer->Read( self->blkid, strpid, self->stripes[strpid],
@@ -199,19 +208,20 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	}
 	checkAfterRepair = checkAgainAfterRepair;
 
-	//size_t blkid;
-	//size_t strpid;
 	chunksRepaired = 0;
 	currentBlockChecked = 0;
-	//finishedRepair = false;
+	repairFailed = false;
+
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
 	CheckBlock();
 	std::cout<<"Out of Check Block of main repair method\n"<< std::flush;
 	repairVar.wait(lk, [this]{return this->finishedRepair;});
 	lk.unlock();
+
 	XrdCl::SyncResponseHandler handlerClose;
 	CloseAllArchives(&handlerClose, 0);
 	handlerClose.WaitForResponse();
+
 	std::cout<<"Out of Archive Closing of main repair method\n"<< std::flush;
 
 
@@ -228,17 +238,9 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 
 		std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired << "\n" << std::flush;
-		//std::shared_ptr<ObjCfg> cfg = std::make_shared<ObjCfg>(objcfg);
-		//return cfg;
-
-	//< ID of the block from which we will be reading
-		//strpid = (i % objcfg.nbchunks); //< ID of the stripe from which we will be reading
-		// generate the file name (blknb/strpnb)
-		//std::string fn = objcfg.GetFileName(blkid, strpid);
-		// if the block/stripe does not exist it means we are reading passed the end of the file
-		//auto itr = urlmap.find(fn);
-		//if (itr == urlmap.end()) {
-
+		if(repairFailed){
+			std::cout << "Repair failed at some point!\n"<<std::flush;
+		}
 
 }
 
@@ -247,7 +249,6 @@ void RepairTool::CheckBlock() {
 	redirectMapOffset = 0;
 	size_t totalBlocks = 0;
 	if (objcfg.nomtfile) {
-		//totalBlocks = filesize * objcfg.nbchunks / objcfg.blksize;
 		totalBlocks = lstblk+1;
 	} else {
 		totalBlocks = lstblk + 1;
@@ -271,7 +272,7 @@ void RepairTool::CheckBlock() {
 
 }
 
-void RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t strpid){
+XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t strpid){
 	auto blkid = blk->blkid;
 	std::string fn = objcfg.GetFileName( blkid, strpid );
 
@@ -298,22 +299,30 @@ void RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t strpid){
 		auto it = writeDataarchs[url]->cdmap.find(fn);
 		uint64_t offset = 0;
 		if(it != writeDataarchs[url]->cdmap.end()){
-
+			XrdCl::DirectoryList* list;
+			uint32_t index = (uint32_t)(it->second);
+			auto st = writeDataarchs[url]->List(list);
+			if(!st.IsOK()){
+				return st;
+			}
+			uint32_t size = list->At(index)->GetStatInfo()->GetSize();
+			std::cout << "Write with size " << size << "\n" << std::flush;
 			// the file exists, so we overwrite it (but make a copy of the current state for testing purposes)
-			uint32_t chksum = objcfg.digest(0, &(blk->stripes[strpid][0]), blk->stripes[strpid].size());
+			uint32_t chksum = objcfg.digest(0, &(blk->stripes[strpid][0]), size);
 			std::stringstream ss;
-			ss << "cp " << url << " " << url<< strpid ;
+			ss << "cp " << url << " " << url<< strpid;
 			std::string s = ss.str();
 			system(s.data());
-			writeDataarchs[url]->WriteFileInto(fn, offset, blk->stripes[strpid].size(), chksum, &(blk->stripes[strpid][0]), nullptr, 0);
+			return writeDataarchs[url]->WriteFileInto(fn, offset, size, chksum, &(blk->stripes[strpid][0]), nullptr, 0);
 
 		}
 		else{
 			uint32_t chksum = objcfg.digest(0, &(blk->stripes[strpid][0]), blk->stripes[strpid].size());
 			// the file doesnt exist at all, so we append it to the archive (likely a completely new archive)
-			writeDataarchs[url]->AppendFile(fn, chksum, blk->stripes[strpid].size(), &(blk->stripes[strpid][0]), nullptr, 0);
+			return writeDataarchs[url]->AppendFile(fn, chksum, blk->stripes[strpid].size(), &(blk->stripes[strpid][0]), nullptr, 0);
 		}
 	}
+	return XrdCl::XRootDStatus(XrdCl::stError, "Couldnt write to archive");
 }
 
 //---------------------------------------------------------------------------
@@ -434,7 +443,7 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    			auto &zipptr = itr->second;
 	    			auto url = itr->first;
 	    			if(zipptr->openstage != XrdCl::ZipArchive::None){
-	    				std::cout << "Archive wasn't properly closed: " << url <<"\n" << std::flush;
+	    				std::cout << "Archive wasn't properly closed: " << url << ", status " << zipptr->openstage << "\n" << std::flush;
 	    				XrdCl::StatInfo* info = new XrdCl::StatInfo();
 	    				XrdCl::XRootDStatus s = zipptr->archive.Stat(false, info);
 	    				if(s.IsOK()){
@@ -649,7 +658,7 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 			>> [=](XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch) {
 				if (st.IsOK() && localSem != nullptr) {
 					try {
-						XrdZip::LFH lfh(lfhbuf->data());
+						XrdZip::LFH lfh(lfhbuf->data(), readSize);
 						if (lfh.ZCRC32 != cdfh->ZCRC32|| lfh.compressedSize != cdfh->compressedSize
 								|| lfh.compressionMethod != cdfh->compressionMethod
 								|| lfh.extraLength != cdfh->extraLength

@@ -135,19 +135,13 @@ class MicroTest: public CppUnit::TestCase
      */
     inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType, bool mustHaveErrors = true){
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
-    	//	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
-    	//uint64_t seed = 1657107864779205389;
-    	//uint64_t seed = 1657143896338803002;
-
+    	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	uint64_t seed = 1657159841384369157;
+    	//uint64_t seed = 1657897774861469583;
     	InitRepair(usecrc32c);
-    	//uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
-    	//uint64_t seed2 = 1657107864779507488;
-    	//uint64_t seed2 = 1657143896339144553;
-
+    	uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	uint64_t seed2= 1657159841384665714;
+    	//uint64_t seed2= 1657897774861901620;
 
     	std::cout << "Random Seed FileGen: " << seed << "Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
@@ -531,12 +525,13 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(status2);
 
 
-	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength + eocdLength);
-	uint64_t offset = offsetRandom(random_engine);
-
 	std::uniform_int_distribution<uint32_t> lengthRandom(1, chsize * 4);
 	uint64_t size = lengthRandom(random_engine);
 	uint64_t writeSize = size;
+
+	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength + eocdLength - size);
+	uint64_t offset = offsetRandom(random_engine);
+
 
 	std::uniform_int_distribution<uint32_t> letter( 0, 25 );
 
@@ -555,6 +550,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(status2);
 	status2 = f.Close();
 	CPPUNIT_ASSERT_XRDST(status2);
+	std::cout << "Successfully corrupted archive";
 }
 
 void MicroTest::UrlNotReachable( size_t index )

@@ -48,7 +48,7 @@ namespace XrdEc {
 
 struct ThreadEndSemaphore{
 	ThreadEndSemaphore(std::shared_ptr<XrdSysSemaphore> s) : sem(s) {}
-	~ThreadEndSemaphore(){std::cout << "Semaphore destroyed\n"<<std::flush;sem->Post();sem->Post();}
+	~ThreadEndSemaphore(){sem->Post();}
 	std::shared_ptr<XrdSysSemaphore> sem;
 };
 
@@ -61,6 +61,7 @@ public:
 		currentBlockChecked = 0;
 		redirectMapOffset = 0;
 		chunksRepaired = 0;
+		repairFailed = false;
 		finishedRepair = false;
 	}
 	virtual ~RepairTool() {
@@ -68,6 +69,7 @@ public:
 	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
 	uint64_t chunksRepaired;
+	bool repairFailed;
 private:
 	void CheckBlock();
 	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem);
@@ -101,7 +103,7 @@ private:
     //! @param ch : chunk info object returned by a read operation
     //-----------------------------------------------------------------------
     bool ParseMetadata( XrdCl::ChunkInfo &ch );
-    void WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
+    XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
 
 	ObjCfg &objcfg;
 	// unused reader only for initialization of block_t
