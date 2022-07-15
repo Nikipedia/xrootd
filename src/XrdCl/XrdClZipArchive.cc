@@ -32,8 +32,6 @@
 
 #include <sys/stat.h>
 
-#include <iostream>
-
 namespace XrdCl
 {
   using namespace XrdZip;
@@ -50,7 +48,7 @@ namespace XrdCl
                              ResponseHandler   *usrHandler,
                              uint16_t           timeout )
   {
-	  if( me.openstage != ZipArchive::Done || !me.archive.IsOpen() )
+    if( me.openstage != ZipArchive::Done || !me.archive.IsOpen() )
       return XRootDStatus( stError, errInvalidOp );
 
     Log *log = DefaultEnv::GetLog();
@@ -177,14 +175,13 @@ namespace XrdCl
         RSP          *rsp = new RSP( relativeOffset, size, usrbuff );
         ZipArchive::Schedule( usrHandler, st, rsp );
       }
-
       return XRootDStatus();
     }
 
     Pipeline p = XrdCl::RdWithRsp<RSP>( me.archive, offset, size, usrbuff ) >>
                    [=, &me]( XRootDStatus &st, RSP &r )
                    {
-    				log->Dump( ZipMsg, "[0x%x] Read %d bytes of remote data at "
+                     log->Dump( ZipMsg, "[0x%x] Read %d bytes of remote data at "
                                         "offset %d.", &me, r.GetLength(), r.GetOffset() );
                      if( usrHandler )
                      {
@@ -198,172 +195,6 @@ namespace XrdCl
     Async( std::move( p ), timeout );
     return XRootDStatus();
   }
-
-  std::string string_to_hex(const std::string& input)
-  {
-      static const char hex_digits[] = "0123456789ABCDEF";
-
-      std::string output;
-      output.reserve(input.length() * 2);
-      for (unsigned char c : input)
-      {
-          output.push_back(hex_digits[c >> 4]);
-          output.push_back(hex_digits[c & 15]);
-      }
-      return output;
-  }
-//---------------------------------------------------------------------------
-// Write data into a given file
-//---------------------------------------------------------------------------
-template<typename RSP>
-XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
-		uint64_t relativeOffset, uint32_t size, uint32_t chksum, void *usrbuff,
-		ResponseHandler *usrHandler, uint16_t timeout) {
-	if (me.openstage != ZipArchive::Done || !me.archive.IsOpen())
-		return XRootDStatus(stError, errInvalidOp);
-
-	Log *log = DefaultEnv::GetLog();
-
-	auto cditr = me.cdmap.find(fn);
-	if (cditr == me.cdmap.end())
-		return XRootDStatus(stError, errNotFound, errNotFound,
-				"File not found.");
-
-	CDFH *cdfh = me.cdvec[cditr->second].get();
-
-	// check if the file is compressed, for now we only support uncompressed and inflate/deflate compression
-	if (cdfh->compressionMethod != 0 && cdfh->compressionMethod != Z_DEFLATED)
-		return XRootDStatus(stError, errNotSupported, 0,
-				"The compression algorithm is not supported!");
-
-	// Now the problem is that at the beginning of our
-	// file there is the Local-file-header, which size
-	// is not known because of the variable size 'extra'
-	// field, so we need to know the offset of the next
-	// record and shift it by the file size.
-	// The next record is either the next LFH (next file)
-	// or the start of the Central-directory.
-	/*uint64_t cdOffset =
-			me.zip64eocd ? me.zip64eocd->cdOffset : me.eocd->cdOffset;
-	uint64_t nextRecordOffset =
-			(cditr->second + 1 < me.cdvec.size()) ?
-					CDFH::GetOffset(*me.cdvec[cditr->second + 1]) : cdOffset;
-	uint64_t filesize = cdfh->compressedSize;
-	uint16_t descsize =
-			cdfh->HasDataDescriptor() ?
-					DataDescriptor::GetSize(cdfh->IsZIP64()) : 0;
-	uint64_t fileoff = nextRecordOffset - filesize - descsize;
-	uint64_t offset = fileoff + relativeOffset;
-	uint64_t sizeTillEnd =
-			relativeOffset > cdfh->uncompressedSize ?
-					0 : cdfh->uncompressedSize - relativeOffset;
-	if (size > sizeTillEnd)
-		size = sizeTillEnd;*/
-	uint64_t offset = CDFH::GetOffset(*cdfh);
-
-	//LFH *lfh = new LFH( fn, crc32, size, time( 0 ) );#
-	LFH lfh(fn, chksum, size, time(0));
-
-
-	std::shared_ptr<buffer_t> lfhbuf;
-	uint32_t lfhlen = lfh.lfhSize;
-	//char* lfhbuf = calloc(size+lfhlen, sizeof(char));
-	//std::vector<char> vec(lfhbuf, )
-	lfhbuf = std::make_shared<buffer_t>();
-	lfhbuf->reserve(size+lfhlen);
-	lfh.Serialize(*lfhbuf);
-	auto usrchars = (char*)usrbuff;
-	for(uint32_t u = 0; u < size; u++){
-		lfhbuf->push_back(usrchars[u]);
-	}
-	//offset -= lfhlen;
-	size += lfhlen;
-
-
-
-	// if it is a compressed file use ZIP cache to read from the file
-	if (cdfh->compressionMethod == Z_DEFLATED) {
-		/*log->Dump( ZipMsg, "[0x%x] Reading compressed data.", &me );
-		 // check if respective ZIP cache exists
-		 bool empty = me.zipcache.find( fn ) == me.zipcache.end();
-		 // if the entry does not exist, it will be created using
-		 // default constructor
-		 ZipCache &cache = me.zipcache[fn];
-
-		 if( relativeOffset > cdfh->uncompressedSize )
-		 {
-		 // we are reading past the end of file,
-		 // we can serve the request right away!
-		 RSP *r = new RSP( relativeOffset, 0, usrbuff );
-		 AnyObject *rsp = new AnyObject();
-		 rsp->Set( r );
-		 usrHandler->HandleResponse( new XRootDStatus(), rsp );
-		 return XRootDStatus();
-		 }
-
-		 uint32_t sizereq = size;
-		 if( relativeOffset + size > cdfh->uncompressedSize )
-		 sizereq = cdfh->uncompressedSize - relativeOffset;
-		 cache.QueueReq( relativeOffset, sizereq, usrbuff, usrHandler );
-
-		 // if we have the whole ZIP archive we can populate the cache
-		 // straight away
-		 if( empty && me.buffer)
-		 {
-		 auto begin = me.buffer.get() + fileoff;
-		 auto end   = begin + filesize ;
-		 buffer_t buff( begin, end );
-		 cache.QueueRsp( XRootDStatus(), 0, std::move( buff ) );
-		 return XRootDStatus();
-		 }*/
-
-		// issue remote write
-		if (relativeOffset > cdfh->compressedSize)
-			return XRootDStatus(); // there's nothing to do,
-								   // we already have all the data locally
-		uint32_t wrsize = size;
-		// check if this is the last read (we reached the end of
-		// file from user perspective)
-		if (relativeOffset + size >= cdfh->uncompressedSize) {
-			// if yes, make sure we readout all the compressed data
-			// Note: In a patological case the compressed size may
-			//       be greater than the uncompressed size
-			wrsize =
-					cdfh->compressedSize > relativeOffset ?
-							cdfh->compressedSize - relativeOffset : 0;
-		}
-		// make sure we are not reading past the end of
-		// compressed data
-		if (relativeOffset + size > cdfh->compressedSize)
-			wrsize = cdfh->compressedSize - relativeOffset;
-
-		// now write the data ...
-		// TODO: uncomment code, but first decompress!
-		Pipeline p =
-				XrdCl::Write(me.archive, offset, wrsize, usrbuff)
-						>> [=, &me](XRootDStatus &st) {
-							Log *log = DefaultEnv::GetLog();
-							log->Dump(ZipMsg,
-									"Wrote bytes to remote data.");
-							//cache.QueueRsp( st, relativeOffset, std::move( *rdbuff ) );
-						};
-		Async(std::move(p), timeout);
-
-		return XRootDStatus();
-	}
-
-	Pipeline p = XrdCl::Write(me.archive, offset, size, lfhbuf->data())
-			>> [=, &me](XRootDStatus &st) mutable {
-				log->Dump( ZipMsg, "Wrote bytes to remote data");
-				if (usrHandler) {
-					XRootDStatus *status = ZipArchive::make_status(st);
-					usrHandler->HandleResponse(status, nullptr);
-				}
-				lfhbuf.reset();
-			};
-	Async(std::move(p), timeout);
-	return XRootDStatus();
-}
 
   //---------------------------------------------------------------------------
   // Constructor
@@ -468,9 +299,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                               [=]( XRootDStatus &status, ChunkInfo &chunk ) mutable
                               {
                                 // check the status is OK
-                                if( !status.IsOK() ) {
-                                	return;
-                                }
+                                if( !status.IsOK() ) return;
 
                                 const char *buff = reinterpret_cast<char*>( chunk.buffer );
                                 while( true )
@@ -483,21 +312,13 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                       const char *eocdBlock = EOCD::Find( buff, chunk.length );
                                       if( !eocdBlock )
                                       {
-                                    	  XRootDStatus error( stError, errDataError, 0,
+                                        XRootDStatus error( stError, errDataError, 0,
                                                             "End-of-central-directory signature not found." );
                                         Pipeline::Stop( error );
                                       }
-                                      try{
-                                      eocd.reset( new EOCD( eocdBlock, chunk.length ) );
+                                      eocd.reset( new EOCD( eocdBlock ) );
                                       log->Dump( ZipMsg, "[0x%x] EOCD record parsed: %s", this,
                                                          eocd->ToString().c_str() );
-                                      if(eocd->cdOffset > archsize || eocd->cdOffset + eocd->cdSize > archsize) throw bad_data();
-                                      }
-                                      catch(const bad_data &ex){
-                                    	  XRootDStatus error( stError, errDataError, 0,
-                                    	                      "End-of-central-directory signature corrupted." );
-                                    	  Pipeline::Stop( error );
-                                      }
 
                                       // Do we have the whole archive?
                                       if( chunk.length == archsize )
@@ -604,18 +425,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                         else
                                           std::tie( cdvec, cdmap ) = CDFH::Parse( buff, eocd->cdSize, eocd->nbCdRec );
                                         log->Dump( ZipMsg, "[0x%x] CD records parsed.", this );
-
-                                        // TODO: is this check correct? checks if the sums of uncompressedSizes are smaller than "archsize" and checks offsets against archsize.
-                                        uint64_t sumSize = 0;
-                                        uint64_t sumCompSize = 0;
-                                        for(auto it = cdvec.begin(); it != cdvec.end(); it++){
-                                        	sumSize += (*it)->uncompressedSize;
-                                        	sumCompSize += (*it)->compressedSize;
-                                        	if((*it)->offset > archsize || (*it)->offset + (*it)->compressedSize > archsize
-                                        			|| (*it)->offset + (*it)->uncompressedSize > archsize) throw bad_data();
-                                        }
-                                        if(sumSize > archsize) throw bad_data();
-                                        if(sumCompSize > archsize) throw bad_data();
                                       }
                                       catch( const bad_data &ex )
                                       {
@@ -635,7 +444,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                                   break;
                                 }
                               }
-
                           | XrdCl::Final( [=]( const XRootDStatus &status )
                               { // finalize the pipeline by calling the user callback
                                 if( status.IsOK() )
@@ -862,12 +670,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     return ReadFromImpl<ChunkInfo>( *this, fn, offset, size, buffer, handler, timeout );
   }
 
-  XRootDStatus ZipArchive::WriteFileInto(const std::string &fn, uint64_t offset,
-  		uint32_t size, uint32_t chksum, void *buffer, ResponseHandler *handler,
-  		uint16_t timeout) {
-	  return WriteIntoImpl<ChunkInfo>( *this, fn, offset, size, chksum, buffer, handler, timeout);
-  }
-
   //---------------------------------------------------------------------------
   // PgRead data from a given file
   //---------------------------------------------------------------------------
@@ -953,7 +755,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     //-------------------------------------------------------------------------
     iov[1].iov_base = const_cast<void*>( buffer );
     iov[1].iov_len  = size;
-
 
     uint64_t wrtoff = cdoff; // we only support appending
     uint32_t wrtlen = iov[0].iov_len + iov[1].iov_len;
@@ -1057,8 +858,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     }
 
     log->Dump( ZipMsg, "[0x%x] Appending file: %s.", this, fn.c_str() );
-
-
     //-------------------------------------------------------------------------
     // Create Local File Header record
     //-------------------------------------------------------------------------
@@ -1068,7 +867,5 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     //-------------------------------------------------------------------------
     return WriteImpl( size, buffer, handler, timeout );
   }
-
-
 
 } /* namespace XrdZip */
