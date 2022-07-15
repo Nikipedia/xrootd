@@ -38,17 +38,8 @@
 #include "XrdCl/XrdClFinalOperation.hh"
 #include "XrdSys/XrdSysPthread.hh"
 
-#include "XrdCl/XrdClResponseJob.hh"
-
-#include "XrdCl/XrdClJobManager.hh"
-#include "XrdCl/XrdClPostMaster.hh"
-#include "XrdCl/XrdClDefaultEnv.hh"
-
-
 namespace XrdCl
 {
-
-
 
   template<bool HasHndl> class Operation;
 
@@ -195,7 +186,6 @@ namespace XrdCl
       friend class Pipeline;
       friend class PipelineHandler;
 
-
     public:
 
       //------------------------------------------------------------------------
@@ -268,7 +258,7 @@ namespace XrdCl
         XRootDStatus st;
         try
         {
-        	st = RunImpl( h, timeout );
+          st = RunImpl( h, timeout );
         }
         catch( const operation_expired& ex )
         {
@@ -283,11 +273,8 @@ namespace XrdCl
           st = XRootDStatus( stError, errInternal, 0, ex.what() );
         }
 
-        if( !st.IsOK() ){
-        	ResponseJob *job = new ResponseJob(h, new XRootDStatus(st), 0, nullptr);
-        	DefaultEnv::GetPostMaster()->GetJobManager()->QueueJob( job );
-        }
-
+        if( !st.IsOK() )
+          h->HandleResponse( new XRootDStatus( st ), nullptr );
       }
 
       //------------------------------------------------------------------------
@@ -778,8 +765,6 @@ namespace XrdCl
       //------------------------------------------------------------------------
       uint16_t timeout;
     };
-
-
 }
 
 #endif // __XRD_CL_OPERATIONS_HH__
