@@ -61,9 +61,10 @@ public:
 		currentBlockChecked = 0;
 		redirectMapOffset = 0;
 		currentReplaceIndex = 0;
-		chunksRepaired = 0;
+		chunksRepaired.store(0);
 		repairFailed = false;
 		finishedRepair = false;
+		chunkRepairsWritten.store(0);
 		st = nullptr;
 	}
 	virtual ~RepairTool() {
@@ -71,7 +72,8 @@ public:
 	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	void CheckFile(XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
-	uint64_t chunksRepaired;
+	std::atomic<uint64_t> chunksRepaired;
+	std::atomic<uint64_t> chunkRepairsWritten;
 	bool repairFailed;
 private:
 
