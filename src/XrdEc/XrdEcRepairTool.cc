@@ -194,6 +194,18 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 	};
 }
 
+//-----------------------------------------------------------------------
+// Get a callback for read operation
+//-----------------------------------------------------------------------
+callback_t RepairTool::read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool) {
+	return [tool, sem, blkid, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
+		if(sem != nullptr && !st.IsOK()){
+			std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nFile: "
+					<< tool->objcfg.GetFileName(blkid, strpid) << "\n" << std::flush;
+		}
+	};
+}
+
 void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 	XrdCl::SyncResponseHandler handler1;
 	TryOpen(&handler1, XrdCl::OpenFlags::Read, 0);
@@ -204,13 +216,33 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 		for (; itr != redirectionMap.end(); ++itr)
 		{
 			const std::string &oldUrl = itr->first;
-			const std::string &newUrl = itr->second;
 			std::cout << "Archive contains some damaged metadata: " << oldUrl << "\n" << std::flush;
 			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
 		}
 	}
 	// do the read for each strpid and blkid but with different callback func
+	uint64_t numBlocks = ceil((filesize / (float) objcfg.chunksize) / objcfg.nbdata);
+	std::vector<std::shared_ptr<buffer_t>> buffers;
+	auto sem = std::make_shared<XrdSysSemaphore>(0);
+	{
+		// switching out of this context will remove the own reference to ptr
+		std::shared_ptr<ThreadEndSemaphore> ptr = std::make_shared<
+				ThreadEndSemaphore>(sem);
 
+		for (size_t blkid = 0; blkid < numBlocks; blkid++)
+		{
+			for (size_t strpid = 0; strpid < objcfg.nbdata + objcfg.nbparity;
+					strpid++)
+			{
+				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
+				buffer->reserve(objcfg.chunksize);
+				buffers.push_back(buffer);
+				reader.DebuggingRead(blkid, strpid, *buffer,
+						RepairTool::read_callback(ptr, blkid, strpid, this));
+			}
+		}
+	}
+	sem->Wait();
 	if (handler)
 	{
 		handler->HandleResponse(handler1.GetStatus(), nullptr);
@@ -502,7 +534,7 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    XrdCl::Async( std::move( p ), timeout );
 }
 
-void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flags flags, uint16_t timeout = 0){
+void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flags flags, uint16_t timeout){
 	const size_t size = objcfg.plgr.size();
 	std::vector<XrdCl::Pipeline> opens;
 	opens.reserve(size);
