@@ -574,12 +574,22 @@ callback_t MicroTest::read_callback(MicroTest *self, size_t blkid, size_t strpid
 }
 
 void MicroTest::VerifyAnyErrorExists(){
+	RepairTool tool(*objcfg);
+	XrdCl::SyncResponseHandler handlerRepair;
+	tool.CheckFile(&handlerRepair);
+	handlerRepair.WaitForResponse();
+	XrdCl::XRootDStatus *status = handlerRepair.GetStatus();
+		if(!status->IsOK()){
+			std::cout << "Archives can't be opened as desired";
+			return;
+		}
+
 	Reader reader(*objcfg);
 	// open the data object
 	XrdCl::SyncResponseHandler handler1;
 	reader.Open(&handler1);
 	handler1.WaitForResponse();
-	XrdCl::XRootDStatus *status = handler1.GetStatus();
+	status = handler1.GetStatus();
 	//CPPUNIT_ASSERT_XRDST(*status);
 	if(!status->IsOK()){
 		std::cout << "Archives can't be opened as desired";
@@ -598,7 +608,7 @@ void MicroTest::VerifyAnyErrorExists(){
 	do {
 		XrdCl::SyncResponseHandler h;
 		//std::cout << rdoff << std::flush;
-		reader.Read(rdoff, rdsize, rdbuff, &h, 0, false);
+		reader.Read(rdoff, rdsize, rdbuff, &h, 0);
 		h.WaitForResponse();
 		status = h.GetStatus();
 		if(!status->IsOK()){
@@ -632,35 +642,15 @@ void MicroTest::VerifyAnyErrorExists(){
 	} while (bytesrd == rdsize && total_bytesrd < maxrd && !errorFound);
 	delete[] rdbuff;
 
-	// now check parity stripes as well
-	if(!errorFound){
-		testedChunkCount = 0;
-		int neededChunks = 0;
-		failedReads = 0;
-		uint64_t numBlocks = ceil((rawdata.size() / (float)chsize)/nbdata);
-		std::vector<std::shared_ptr<buffer_t>> buffers;
-		for(size_t blkid = 0; blkid < numBlocks; blkid++){
-			for(size_t strpid = 0; strpid < nbdata+nbparity; strpid++){
-				neededChunks++;
-				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
-				buffer->reserve(chsize);
-				buffers.push_back(buffer);
-				reader.DebuggingRead(blkid, strpid, *buffer, MicroTest::read_callback(this, blkid, strpid));
-			}
-		}
-		while(testedChunkCount + failedReads < neededChunks){
-			sleep(0.05);
-		}
-
-		if(failedReads > 0) errorFound = true;
-	}
-
 	// close the data object
 	XrdCl::SyncResponseHandler handler2;
 	reader.Close(&handler2);
 	handler2.WaitForResponse();
 	status = handler2.GetStatus();
 	CPPUNIT_ASSERT_XRDST(*status);
+
+
+
 	delete status;
 
 	CPPUNIT_ASSERT(errorFound);
@@ -671,12 +661,21 @@ void MicroTest::VerifyAnyErrorExists(){
 void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
 {
 	std::cout << "Read Verification started\n" << std::flush;
+
+	// check metadata and checksums
+	RepairTool tool(*objcfg);
+	XrdCl::SyncResponseHandler handlerRepair;
+	tool.CheckFile(&handlerRepair);
+	handlerRepair.WaitForResponse();
+	XrdCl::XRootDStatus *status = handlerRepair.GetStatus();
+	CPPUNIT_ASSERT_XRDST( *status );
+
   Reader reader( *objcfg );
   // open the data object
   XrdCl::SyncResponseHandler handler1;
   reader.Open( &handler1 );
   handler1.WaitForResponse();
-  XrdCl::XRootDStatus *status = handler1.GetStatus();
+  status = handler1.GetStatus();
   CPPUNIT_ASSERT_XRDST( *status );
   delete status;
   
@@ -689,7 +688,7 @@ void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
   {
     XrdCl::SyncResponseHandler h;
     //std::cout << rdoff << std::flush;
-    reader.Read( rdoff, rdsize, rdbuff, &h, 0, repairAllow);
+    reader.Read( rdoff, rdsize, rdbuff, &h, 0);
     h.WaitForResponse();
     status = h.GetStatus();
     CPPUNIT_ASSERT_XRDST( *status );
@@ -717,32 +716,6 @@ void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
   }
   while( bytesrd == rdsize && total_bytesrd < maxrd );
   delete[] rdbuff;
-  bool errorFound = false;
-  if(!repairAllow){
-	  // now check parity stripes as well
-	  		testedChunkCount = 0;
-	  		int neededChunks = 0;
-	  		failedReads = 0;
-	  		uint64_t numBlocks = ceil((rawdata.size() / (float)chsize)/nbdata);
-	  		std::vector<std::shared_ptr<buffer_t>> buffers;
-	  		for(size_t blkid = 0; blkid < numBlocks; blkid++){
-	  			for(size_t strpid = 0; strpid < nbdata+nbparity; strpid++){
-	  				neededChunks++;
-	  				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
-	  				buffer->reserve(chsize);
-	  				buffers.push_back(buffer);
-	  				reader.DebuggingRead(blkid, strpid, *buffer, MicroTest::read_callback(this, blkid, strpid));
-	  			}
-	  		}
-	  		while(testedChunkCount + failedReads < neededChunks){
-	  			sleep(0.05);
-	  		}
-	  		buffers.clear();
-
-	  		if(failedReads > 0) errorFound = true;
-  }
-
-  CPPUNIT_ASSERT(!errorFound);
  
   // close the data object
   XrdCl::SyncResponseHandler handler2;
@@ -775,7 +748,7 @@ void MicroTest::RandomReadVerify(bool repairAllow)
   // read the data
   char *rdbuff = new char[rdlen];
   XrdCl::SyncResponseHandler h;
-  reader.Read( rdoff, rdlen, rdbuff, &h, 0, repairAllow );
+  reader.Read( rdoff, rdlen, rdbuff, &h, 0);
   h.WaitForResponse();
   status = h.GetStatus();
   CPPUNIT_ASSERT_XRDST( *status );
@@ -823,7 +796,7 @@ void MicroTest::Corrupted1stBlkReadVerify(bool repairAllow)
   // read the data
   char *rdbuff = new char[rdlen];
   XrdCl::SyncResponseHandler h;
-  reader.Read( rdoff, rdlen, rdbuff, &h, 0, repairAllow );
+  reader.Read( rdoff, rdlen, rdbuff, &h, 0 );
   h.WaitForResponse();
   status = h.GetStatus();
   CPPUNIT_ASSERT( status->status == XrdCl::stError &&
