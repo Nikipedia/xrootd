@@ -60,9 +60,11 @@ public:
 			checkAfterRepair(false){
 		currentBlockChecked = 0;
 		redirectMapOffset = 0;
+		currentReplaceIndex = 0;
 		chunksRepaired = 0;
 		repairFailed = false;
 		finishedRepair = false;
+		st = nullptr;
 	}
 	virtual ~RepairTool() {
 	}
@@ -206,6 +208,7 @@ private:
 	Reader::metadata_t metadata;  //> map URL to CD metadata
 	Reader::urlmap_t urlmap;    //> map blknb/strpnb (data chunk) to URL
 	Reader::urlmap_t redirectionMap; //> map corrupted url to new url
+	size_t currentReplaceIndex;
 	Reader::missing_t missing;   //> set of missing stripes
 	std::shared_ptr<block_t> block;  //> cache for the block we are reading from
 	std::mutex blkmtx;    //> mutex guarding the block from parallel access
@@ -215,6 +218,7 @@ private:
 	// for replacing URLs
 	std::mutex urlMutex;
 
+	XrdCl::XRootDStatus* st;
 
     int redirectMapOffset;
 
