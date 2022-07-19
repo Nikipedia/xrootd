@@ -87,7 +87,7 @@ namespace XrdEc
       else
         opens.emplace_back( OpenOnly( *dataarchs[url], url, false ) );
 
-      healthRead.emplace_back(ReadHealth(i));
+      healthRead.emplace_back(CheckHealthExists(i));
     }
 
 
@@ -123,7 +123,7 @@ namespace XrdEc
     // in parallel open the data files and read the metadata
     XrdCl::Pipeline p = objcfg.nomtfile
                       ? XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata )
-                    		  //| XrdCl::Parallel(healthRead).AtLeast(objcfg.nbdata)
+                    		  | XrdCl::Parallel(healthRead).AtLeast(0)
                     		  | ReadSize( 0 ) | XrdCl::Final( pipehndl )
                       : XrdCl::Parallel( ReadMetadata( 0 ),
                                          XrdCl::Parallel( opens ).AtLeast( objcfg.nbdata ) ) >> pipehndl;
@@ -296,184 +296,133 @@ namespace XrdEc
     // create a buffer for the data
     buffer.resize( objcfg.chunksize );
     // issue the read request
-    XrdCl::Async(XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
-                    [zipptr, fn, cb, &buffer, exactControl, this, url, timeout]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
-                    {
-                      //---------------------------------------------------
-                      // If read failed there's nothing to do, just pass the
-                      // status to user callback
-                      //---------------------------------------------------
-                      if( !st.IsOK() )
-                      {
-                    	  cb( XrdCl::XRootDStatus(st.status, "Read failed"), 0 );
-                        return;
-                      }
-                      //---------------------------------------------------
-                      // Get the checksum for the read data
-                      //---------------------------------------------------
-                      uint32_t orgcksum = 0;
-                      //auto s = zipptr->GetCRC32( fn, orgcksum );
-                      auto s = zipptr->GetCRC32(fn, orgcksum);
-                      //---------------------------------------------------
-                      // If we cannot extract the checksum assume the data
-                      // are corrupted
-                      //---------------------------------------------------
-                      if( !s.IsOK() )
-                      {
-                        cb( XrdCl::XRootDStatus(s.status, s.code, s.errNo, "Chksum fail"), 0 );
-                        return;
-                      }
-                      //---------------------------------------------------
-                      // Verify data integrity
-                      //---------------------------------------------------
-                      uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
-                      if( orgcksum != cksum )
-                      {
-                    	  cb( XrdCl::XRootDStatus( XrdCl::stError, "Chksum unequal" ), 0 );
-                        return;
-                      }
-                      // optionally also checks LFH against CDFH
-                      if (exactControl) {
-                    	  auto cditr = zipptr->cdmap.find(fn);
-							if (cditr == zipptr->cdmap.end())
+	XrdCl::Async(
+			XrdCl::ReadFrom(*zipptr, fn, 0, rdsize, buffer.data())
+					>> [zipptr, fn, cb, &buffer, exactControl, this, url,
+							timeout](XrdCl::XRootDStatus &st,
+							XrdCl::ChunkInfo &ch)
+							{
+								//---------------------------------------------------
+								// If read failed there's nothing to do, just pass the
+								// status to user callback
+								//---------------------------------------------------
+								if( !st.IsOK() )
 								{
-								cb(XrdCl::XRootDStatus(XrdCl::stError, "File not found."),0);
-								return;
+									cb( XrdCl::XRootDStatus(st.status, XrdCl::errNotFound, 0, "Read failed"), 0 );
+									return;
 								}
-
-
-							XrdZip::CDFH *cdfh =
+								//---------------------------------------------------
+								// Get the checksum for the read data
+								//---------------------------------------------------
+								uint32_t orgcksum = 0;
+								//auto s = zipptr->GetCRC32( fn, orgcksum );
+								auto s = zipptr->GetCRC32(fn, orgcksum);
+								//---------------------------------------------------
+								// If we cannot extract the checksum assume the data
+								// are corrupted
+								//---------------------------------------------------
+								if( !s.IsOK() )
+								{
+									cb( XrdCl::XRootDStatus(s.status, s.code, s.errNo, "Chksum fail"), 0 );
+									return;
+								}
+								// optionally also checks LFH against CDFH
+								if (exactControl)
+								{
+									auto cditr = zipptr->cdmap.find(fn);
+									if (cditr == zipptr->cdmap.end())
+									{
+										cb(XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errNotFound, 0, "File not found in CD."),0);
+										return;
+									}
+									XrdZip::CDFH *cdfh =
 									zipptr->cdvec[cditr->second].get();
-							uint32_t offset = XrdZip::CDFH::GetOffset(*cdfh);
-							uint64_t cdOffset =
+									uint32_t offset = XrdZip::CDFH::GetOffset(*cdfh);
+									uint64_t cdOffset =
 									zipptr->zip64eocd ?
-											zipptr->zip64eocd->cdOffset :
-											zipptr->eocd->cdOffset;
-							uint64_t nextRecordOffset =
+									zipptr->zip64eocd->cdOffset :
+									zipptr->eocd->cdOffset;
+									uint64_t nextRecordOffset =
 									(cditr->second + 1 < zipptr->cdvec.size()) ?
-											XrdZip::CDFH::GetOffset(
-													*zipptr->cdvec[cditr->second
-															+ 1]) :
-											cdOffset;
-							auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
-							std::shared_ptr<buffer_t> lfhbuf;
-							lfhbuf = std::make_shared<buffer_t>();
-							lfhbuf->reserve(readSize);
-							XrdCl::Pipeline p =  XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
-							                   [=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
-							                   {
-												if (st.IsOK()) {
-													try {
-														XrdZip::LFH lfh(
-																lfhbuf->data());
-												if (lfh.ZCRC32 != orgcksum) {
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-	"CRC!=CDFH"),
-	0);
-	return;
-}
-												if (lfh.compressedSize
-														!= cdfh->compressedSize) {
-													std::stringstream ss;
-													ss << "CompSize " << lfh.compressedSize << " != " << cdfh->compressedSize;
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	ss.str()),
-															0);
-													return;
+									XrdZip::CDFH::GetOffset(
+											*zipptr->cdvec[cditr->second
+											+ 1]) :
+									cdOffset;
+									auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
+									std::shared_ptr<buffer_t> lfhbuf;
+									lfhbuf = std::make_shared<buffer_t>();
+									lfhbuf->reserve(readSize);
+									XrdCl::Pipeline p = XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
+									[=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+									{
+										if (st.IsOK())
+										{
+											try
+											{
+												XrdZip::LFH lfh(lfhbuf->data());
+												if (lfh.ZCRC32 != orgcksum||
+														lfh.compressedSize != cdfh->compressedSize||
+														lfh.compressionMethod != cdfh->compressionMethod||
+														lfh.extraLength != cdfh->extraLength||
+														lfh.filename != cdfh->filename||
+														lfh.filenameLength != cdfh->filenameLength||
+														lfh.generalBitFlag != cdfh->generalBitFlag||
+														lfh.minZipVersion != cdfh->minZipVersion||
+														lfh.uncompressedSize != cdfh->uncompressedSize)
+												{
+													cb(XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errCorruptedHeader, 0, "LFH!=CDFH"),0);
 												}
-												if (lfh.compressionMethod
-														!= cdfh->compressionMethod
-														|| lfh.extraLength
-																!= cdfh->extraLength){
-													std::stringstream ss;
-													ss << "CompMethod "
-															<< lfh.compressionMethod
-															<< " != "
-															<< cdfh->compressionMethod
-															<< " extraLength "
-															<< lfh.extraLength
-															<< " != "
-															<< cdfh->extraLength;
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	ss.str()),
-															0);
-													return;
-												}
-														if( lfh.filename
-																!= cdfh->filename
-														|| lfh.filenameLength
-																!= cdfh->filenameLength){
-															std::stringstream ss;
-															ss << "filename!=CDFH" << lfh.filename << ":"<<cdfh->filename<< " lengths: " << lfh.filenameLength << ":" << cdfh->filenameLength << "\n" << std::flush;
-															cb(
-																	XrdCl::XRootDStatus(
-																			XrdCl::stError,
-																			ss.str()),
-																	0);
-															return;
-														}
-														if( lfh.generalBitFlag
-																!= cdfh->generalBitFlag
-														|| lfh.minZipVersion
-																!= cdfh->minZipVersion) {
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	"LFH!=CDFH"),
-															0);
-													return;
-												}
-												if (lfh.uncompressedSize
-														!= cdfh->uncompressedSize) {
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	"uncompSize!=CDFH"),
-															0);
-													return;
-												}
-														//---------------------------------------------------
-														// All is good, we can call now the user callback
-														//---------------------------------------------------
-														else {
-															cb(
-																	XrdCl::XRootDStatus(),
-																	ch.length);
-															return;
-														}
-													} catch (const std::exception &e) {
-
+												// LFH header and CDFH header are the same
+												else
+												{
+													//---------------------------------------------------
+													// Verify data integrity
+													//---------------------------------------------------
+													uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
+													if( orgcksum != cksum )
+													{
+														cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errCheckSumError, 0, "Chksum of data and cdfh not equal" ), 0 );
+														return;
 													}
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	XrdCl::errCorruptedHeader,
-																	0,
-																	"Couldnt parse lfh"),
-															0);
-													return;
-												} else {
-													cb(XrdCl::XRootDStatus(st.status, st.code, st.errNo, "ReadFrom err"), 0);
-																					return;
+													// checksums identical, call with positive response
+													cb(XrdCl::XRootDStatus(), ch.length);
 												}
-											};
-							    Async( std::move( p ), timeout );
-							    return;
-						} else {
-							//---------------------------------------------------
-							// All is good, we can call now the user callback
-							//---------------------------------------------------
-							cb(XrdCl::XRootDStatus(), ch.length);
-							return;
-						}
-                    }, timeout);
-    }
+												return;
+											}
+											catch (const std::exception &e)
+											{
+
+											}
+											cb(XrdCl::XRootDStatus(XrdCl::stError,XrdCl::errCorruptedHeader,0,"Couldn't parse lfh"),0);
+											return;
+										}
+										else
+										{
+											cb(XrdCl::XRootDStatus(st.status, st.code, st.errNo, "ReadFrom err"), 0);
+											return;
+										}
+									};
+									Async( std::move( p ), timeout );
+									return;
+								}
+								else{
+									//---------------------------------------------------
+									// Verify data integrity
+									//---------------------------------------------------
+									uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
+									if( orgcksum != cksum )
+									{
+										cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errCheckSumError, 0, "Chksum of data and cdfh not equal" ), 0 );
+										return;
+									}
+									//---------------------------------------------------
+									// All is good, we can call now the user callback
+									//---------------------------------------------------
+									cb(XrdCl::XRootDStatus(), ch.length);
+									return;
+								}
+							}, timeout);
+}
 
   //-----------------------------------------------------------------------
   // Read metadata for the object
@@ -567,21 +516,33 @@ namespace XrdEc
         };
   }
 
+  XrdCl::Pipeline Reader::CheckHealthExists(size_t index){
+	  std::string url = objcfg.GetDataUrl( index );
+	  		  return XrdCl::ListXAttr(dataarchs[url]->GetFile()) >>
+	  				  [index, url, this] (XrdCl::XRootDStatus &st, std::vector<XrdCl::XAttr> attrs){
+	  			  	  	 for(auto it = attrs.begin(); it != attrs.end(); it++){
+	  			  	  		 if(it->name == "xrdec.corrupted"){
+	  			  	  			 XrdCl::Pipeline::Replace(ReadHealth(index));
+	  			  	  		 }
+	  			  	  	 }
+	  		  };
+  }
+
   XrdCl::Pipeline Reader::ReadHealth(size_t index){
 		  std::string url = objcfg.GetDataUrl( index );
-		  return XrdCl::GetXAttr( dataarchs[url]->GetFile(), "xrdec.unhealthy" ) >>
+		  return XrdCl::GetXAttr( dataarchs[url]->GetFile(), "xrdec.corrupted" ) >>
 	          [index, url, this]( XrdCl::XRootDStatus &st, std::string &damage)
 	          {
-	            if( !st.IsOK() )
-	            {
-	              //-------------------------------------------------------------
-	              // Check if we can recover the error or a diffrent location
-	              //-------------------------------------------------------------
-
-	              return;
-	            }
-	            int damaged = std::stoi( damage );
-	            if(damaged > 0) this->dataarchs[url]-> openstage = XrdCl::ZipArchive::Error;
+				if (st.IsOK()) {
+					try {
+						int damaged = std::stoi(damage);
+						if (damaged > 0)
+							this->dataarchs[url]->openstage = XrdCl::ZipArchive::Error;
+					} catch (std::invalid_argument&) {
+						return;
+					}
+				}
+				return;
 	          };
   }
 

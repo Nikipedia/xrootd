@@ -137,11 +137,13 @@ class MicroTest: public CppUnit::TestCase
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
     	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed = 1657897774861469583;
+    	//uint64_t seed = 1658161510326609618;
+    	randomSeed = seed;
+
     	InitRepair(usecrc32c);
     	uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed2= 1657897774861901620;
+    	//uint64_t seed2= 1658161510326986687;
 
     	std::cout << "Random Seed FileGen: " << seed << "Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
@@ -186,7 +188,7 @@ class MicroTest: public CppUnit::TestCase
 		//UrlReachable(3);
 		//UrlReachable(4);
 		}
-		CleanUp();
+		//CleanUp();
     }
 
     inline void AlignedRepairNoHostTest(){
@@ -371,10 +373,13 @@ inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
 
     static const size_t nbdata   = 4;
     static const size_t nbparity = 2;
-    static const size_t chsize   = 16;
+    //static const size_t chsize   = 16;
+    static const size_t chsize   = 128;
     static const size_t nbiters  = 16;
 
     static const size_t lfhsize  = 30;
+
+    uint32_t randomSeed;
 
     std::vector<char> rawdata;
 };
@@ -525,7 +530,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(status2);
 
 
-	std::uniform_int_distribution<uint32_t> lengthRandom(1, chsize * 4);
+	std::uniform_int_distribution<uint32_t> lengthRandom(1, chsize);
 	uint64_t size = lengthRandom(random_engine);
 	uint64_t writeSize = size;
 
@@ -537,7 +542,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 
 	std::vector<char> buffer;
 
-	std::cout << "Corrupting host " << url << " at offset " << (int)offset << " with size " << (int)size << ":\n" << std::flush;
+	std::cout << "Corrupting host " << url << " at offset " << offset << " with size " << size << ":\n" << std::flush;
 
 	while(size > 0){
 		uint32_t letterAdd = letter(random_engine);
@@ -910,7 +915,8 @@ void MicroTest::ReadVerify( uint32_t rdsize, bool repairAllow, uint64_t maxrd )
 void MicroTest::RandomReadVerify(bool repairAllow)
 {
   size_t filesize = rawdata.size();
-  static std::default_random_engine random_engine( std::chrono::system_clock::now().time_since_epoch().count() );
+  // better reproducibility: set seed
+  static std::default_random_engine random_engine( randomSeed );
   std::uniform_int_distribution<uint32_t> offdistr( 0, filesize );
   uint64_t rdoff = offdistr( random_engine );
   std::uniform_int_distribution<uint32_t> lendistr( rdoff, filesize + 32 );
@@ -1045,7 +1051,7 @@ void MicroTest::AlignedRandomWriteRaw(uint64_t seed)
   delete status;
   // generate random stuff
   static std::default_random_engine random_engine( seed );
-  std::uniform_int_distribution<uint32_t> filelength( 256, 512 );
+  std::uniform_int_distribution<uint32_t> filelength( 256, 2560 );
   // data should be equally distributable among all nodes?
   uint64_t size = filelength( random_engine );
   char buffer[size];

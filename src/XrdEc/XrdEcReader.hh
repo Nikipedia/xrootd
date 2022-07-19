@@ -174,6 +174,8 @@ namespace XrdEc
 
       XrdCl::Pipeline ReadHealth( size_t index );
 
+      XrdCl::Pipeline CheckHealthExists( size_t index );
+
       //-----------------------------------------------------------------------
       //! Parse metadata from chunk info object
       //!
