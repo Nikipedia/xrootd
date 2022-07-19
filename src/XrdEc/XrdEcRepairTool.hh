@@ -158,6 +158,14 @@ private:
 	 */
 	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
 	/**
+	 * Used for CheckFile: If the read was unsuccessful due to corrupted data (checksum violation) message the user.
+	 * @param self
+	 * @param tool
+	 * @param strpid
+	 * @return
+	 */
+	static callback_t read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool);
+	/**
 	 * Writes the content of the stripe to its corresponding writeDataarch by writing into or appending.
 	 * @param blk
 	 * @param strpid
