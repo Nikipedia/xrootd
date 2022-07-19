@@ -67,43 +67,127 @@ public:
 	virtual ~RepairTool() {
 	}
 	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
+	void CheckFile(XrdCl::ResponseHandler *handler);
 	size_t currentBlockChecked;
 	uint64_t chunksRepaired;
 	bool repairFailed;
 private:
-	void CheckBlock();
-	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem);
-	void InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr);
-	void CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t blkid, uint16_t strpid);
-	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer );
-	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
+
+	/**
+	 * Initializes read/write Dataarchs, opens them and checks whether any need to be replaced.
+	 * @param handler
+	 * @param timeout
+	 */
 	void OpenInUpdateMode(XrdCl::ResponseHandler *handler,
-			uint16_t timeout = 0);
-	void CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
-	XrdZip::buffer_t GetMetadataBuffer();
-	void ReplaceURL(const std::string &url);
-	void AddMissing(const buffer_t &cdbuff);
-	XrdCl::Pipeline ReadMetadata( size_t index );
+				uint16_t timeout = 0);
+	/**
+	 * Opens read Dataarchs and fills the redirection map, but doesn't create writeDataarchs yet.
+	 * @param handler
+	 * @param timeout
+	 */
+	void TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flags flags, uint16_t timeout = 0);
     //-----------------------------------------------------------------------
     //! Read size from xattr
     //!
     //! @param index : placement's index
     //-----------------------------------------------------------------------
     XrdCl::Pipeline ReadSize( size_t index );
+    /**
+     * Checks whether the "corrupted" flag exists, if yes, ReadHealth is called
+     * @param index
+     * @return
+     */
+    XrdCl::Pipeline CheckHealthExists(size_t index);
+    /**
+     * Reads the XAttr "xrdec.corrupted". If it is > 0, the archive's openstage is set to error.
+     * @param index
+     * @return
+     */
+    XrdCl::Pipeline ReadHealth(size_t index);
+	/**
+	 * Checks all LFHs against their CDFHs
+	 * @param sem Is passed to each check to increase reference count
+	 */
+	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem);
+	/**
+	 * Reads and compares LFHs to the already read CDFHs and replaces and closes archives that have faulty metadata.
+	 * @param sem
+	 * @param blkid
+	 * @param strpid
+	 */
+	void CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t blkid, uint16_t strpid);
+	/**
+	 * Replaces archive with one on a different host, then closes old archive and marks it as corrupted.
+	 * @param url
+	 * @param zipptr
+	 */
+	void InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr);
+	/**
+	 * Creates a new archive on a different host, adds an entry to redirectionMap but writeDataarchs keeps it in the same url entry for easier referencing.
+	 * @param url
+	 */
+	void ReplaceURL(const std::string &url);
 
-    std::vector<XrdCl::Pipeline> ReadHealth();
+    //-----------------------------------------------------------------------
+    //! Checks the block at currentBlockIndex and executes error correction
+    //-----------------------------------------------------------------------
+	void CheckBlock();
+	/**
+	 * Checks all stripes of the current block. Returns false if the block is finished (in positive or negative way).
+	 * @param self
+	 * @param writer
+	 * @return
+	 */
+	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer );
+    /**
+     * Initiates the actual read from disk, calls update_callback afterwards
+     * @param blknb
+     * @param strpnb
+     * @param buffer
+     * @param cb
+     * @param timeout
+     * @param exactControl
+     */
+	void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
+	/**
+	 * Sets the state of the stripe we read to okay or missing and calls error correction again.
+	 * @param self
+	 * @param tool
+	 * @param strpid
+	 * @return
+	 */
+	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
+	/**
+	 * Writes the content of the stripe to its corresponding writeDataarch by writing into or appending.
+	 * @param blk
+	 * @param strpid
+	 * @return
+	 */
+	XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
 
-    void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
+	/**
+	 * Closes all archives in writeDataarchs and sets their corrupted flag to 0.
+	 * @param handler
+	 * @param timeout
+	 */
+	void CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
 
+
+
+    void AddMissing(const buffer_t &cdbuff);
     bool IsMissing(const std::string &fn);
 
+    // not really used since we don't have a metadata file
+
+	XrdZip::buffer_t GetMetadataBuffer();
+	XrdCl::Pipeline ReadMetadata( size_t index );
     //-----------------------------------------------------------------------
     //! Parse metadata from chunk info object
     //!
     //! @param ch : chunk info object returned by a read operation
     //-----------------------------------------------------------------------
     bool ParseMetadata( XrdCl::ChunkInfo &ch );
-    XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
+
 
 	ObjCfg &objcfg;
 	// unused reader only for initialization of block_t
@@ -113,7 +197,7 @@ private:
 	Reader::dataarchs_t writeDataarchs; //> map URL to ZipArchives for writing (may be different!)
 	Reader::metadata_t metadata;  //> map URL to CD metadata
 	Reader::urlmap_t urlmap;    //> map blknb/strpnb (data chunk) to URL
-	Reader::urlmap_t redirectionMap;
+	Reader::urlmap_t redirectionMap; //> map corrupted url to new url
 	Reader::missing_t missing;   //> set of missing stripes
 	std::shared_ptr<block_t> block;  //> cache for the block we are reading from
 	std::mutex blkmtx;    //> mutex guarding the block from parallel access
