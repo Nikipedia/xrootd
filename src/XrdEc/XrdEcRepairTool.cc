@@ -143,7 +143,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
         	                   RepairTool::update_callback( self, writer, strpid ), 0, true );
         }
         else{
-        	writer->chunksRepaired++;
+        	writer->chunksRepaired.fetch_add(1);
         	self->state[strpid] = block_t::Valid;
         	validcnt++;
         	if(validcnt == writer->objcfg.nbchunks){
@@ -272,14 +272,14 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	}
 	checkAfterRepair = checkAgainAfterRepair;
 
-	chunksRepaired = 0;
+	chunksRepaired.store(0);
 	currentBlockChecked = 0;
 	repairFailed = false;
 
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
 	CheckBlock();
 	std::cout<<"Out of Check Block of main repair method\n"<< std::flush;
-	repairVar.wait(lk, [this]{return this->finishedRepair;});
+	repairVar.wait(lk, [this]{return this->finishedRepair && this->chunkRepairsWritten.load() == this->chunksRepaired.load();});
 	lk.unlock();
 
 	XrdCl::SyncResponseHandler handlerClose;
@@ -301,7 +301,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 							std::cout << "Redirect from " << it->first << " to " << it->second << "\n" << std::flush;
 
 
-		std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired << "\n" << std::flush;
+		std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired.load() << "\n" << std::flush;
 		if(repairFailed){
 			std::cout << "Repair failed at some point!\n"<<std::flush;
 		}
@@ -331,6 +331,7 @@ void RepairTool::CheckBlock() {
 	}
 	else {
 		std::unique_lock<std::mutex> lk(finishedRepairMutex);
+		std::cout << "Finished Repair init\n"<<std::flush;
 		finishedRepair = true;
 		repairVar.notify_all();
 	}
@@ -364,10 +365,35 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 		auto it = writeDataarchs[url]->cdmap.find(fn);
 		uint64_t offset = 0;
 		int32_t actualSize = objcfg.chunksize;
-					if(filesize < blkid * objcfg.chunksize * objcfg.nbdata + (strpid + 1) * objcfg.chunksize){
-						actualSize = filesize - (blkid * objcfg.chunksize * objcfg.nbdata + strpid * objcfg.chunksize);
-						if(actualSize < 0) actualSize = 0;
-					}
+		if (strpid < objcfg.nbdata && filesize < blkid * objcfg.chunksize * objcfg.nbdata
+						+ (strpid + 1) * objcfg.chunksize)
+		{
+			actualSize = filesize - (blkid * objcfg.chunksize * objcfg.nbdata
+							+ strpid * objcfg.chunksize);
+			if (actualSize < 0)
+				actualSize = 0;
+		}
+		// if we are in a parity stripe and only the first data stripe has size > 0, the parity stripe has that same size ( < chunksize)
+		if(strpid >= objcfg.nbdata && filesize < blkid * objcfg.chunksize * objcfg.nbdata + objcfg.chunksize){
+			actualSize = filesize - (blkid * objcfg.chunksize * objcfg.nbdata);
+			if (actualSize < 0)
+				actualSize = 0;
+		}
+		std::cout << "Actual Write Size: " << actualSize
+				<< " because file size is " << filesize << "\n" << std::flush;
+
+		auto pipehndl = [=](const XrdCl::XRootDStatus &st) {
+			// increase the written counter by one (atomic)
+			if(!st.IsOK()){
+				std::cout << "Write to " << url << " failed: " << st.code << "\n" << std::flush;
+			}
+			std::unique_lock<std::mutex> lk(finishedRepairMutex);
+			chunkRepairsWritten.fetch_add(1);
+
+			std::cout << "Write pipeline ended "<<chunkRepairsWritten.load() << "\n" << std::flush;
+			repairVar.notify_all();
+			    	};
+
 		if(it != writeDataarchs[url]->cdmap.end()){
 
 			// the file exists, so we overwrite it (but make a copy of the current state for testing purposes)
@@ -376,16 +402,29 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 			ss << "cp " << url << " " << url<< strpid;
 			std::string s = ss.str();
 			system(s.data());
-			return writeDataarchs[url]->WriteFileInto(fn, offset, actualSize, chksum, &(blk->stripes[strpid][0]), nullptr, 0);
-
+			//return writeDataarchs[url]->WriteFileInto(fn, offset, actualSize, chksum, &(blk->stripes[strpid][0]), nullptr, 0);
+			XrdCl::Pipeline p = XrdCl::WriteIntoFile(XrdCl::Ctx<XrdCl::ZipArchive>(*writeDataarchs[url]),
+					fn, offset, actualSize, chksum, &(blk->stripes[strpid][0]), 0)
+							| XrdCl::Final(pipehndl);
+			XrdCl::Async(std::move(p));
+			return XrdCl::XRootDStatus();
 		}
 		else{
 
 			uint32_t chksum = objcfg.digest(0, &(blk->stripes[strpid][0]), actualSize);
 			// the file doesnt exist at all, so we append it to the archive (likely a completely new archive)
-			return writeDataarchs[url]->AppendFile(fn, chksum, actualSize, &(blk->stripes[strpid][0]), nullptr, 0);
+			XrdCl::Pipeline p = XrdCl::AppendFile(
+					XrdCl::Ctx<XrdCl::ZipArchive>(*writeDataarchs[url]),
+					fn, chksum, actualSize, &(blk->stripes[strpid][0]))
+				| XrdCl::Final(pipehndl);
+			XrdCl::Async(std::move(p));
+			return XrdCl::XRootDStatus();
 		}
 	}
+	std::unique_lock<std::mutex> lk(finishedRepairMutex);
+				std::cout << "Write call failed\n" << std::flush;
+				chunkRepairsWritten.fetch_add(1);
+				repairVar.notify_all();
 	return XrdCl::XRootDStatus(XrdCl::stError, "Couldnt write to archive");
 }
 
@@ -466,8 +505,8 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    std::string closeTime = std::to_string( time(NULL) );
 
 	    // since the filesize was already determined in previous writes we keep it
-	    XrdCl::Pipeline p2 = ReadSize(0);
-	    XrdCl::Async(std::move(p2));
+	    //XrdCl::Pipeline p2 = ReadSize(0);
+	    //XrdCl::Async(std::move(p2));
 
 	    std::vector<XrdCl::xattr_t> xav{ {"xrdec.filesize", std::to_string(filesize)},
 	                                     {"xrdec.strpver", closeTime.c_str()},
@@ -484,6 +523,12 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    	  XrdCl::Pipeline p = XrdCl::SetXAttr( writeDataarchs[objcfg.GetDataUrl(i)]->GetFile(), xav )
 	                          | XrdCl::CloseArchive( *writeDataarchs[objcfg.GetDataUrl(i)] );
 	        closes.emplace_back( std::move( p ) );
+	      }
+	      else{
+	    	  std::cout<< "Archive " << objcfg.GetDataUrl(i) << " not open but rather " << writeDataarchs[objcfg.GetDataUrl(i)]->openstage << "\n" << std::flush;
+	    	  XrdCl::Pipeline p = XrdCl::SetXAttr( writeDataarchs[objcfg.GetDataUrl(i)]->GetFile(), xav )
+	    	  	                          | XrdCl::CloseArchive( *writeDataarchs[objcfg.GetDataUrl(i)] );
+	    	  closes.emplace_back( std::move( p ) );
 	      }
 	      //-----------------------------------------------------------------------
 	      // replicate the metadata
@@ -639,10 +684,12 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 			writeDataarchs.emplace(readItr->first, readItr->second);
 		}
 		auto itr = redirectionMap.begin();
+		size_t index = 0;
 		for (; itr != redirectionMap.end(); ++itr)
 		{
 			const std::string &oldUrl = itr->first;
-			const std::string &newUrl = itr->second;
+			// the redirection map saves the plgr without the "test.txt" file name for easier future replacement
+			const std::string &newUrl = objcfg.GetReplacementUrl(index);
 			auto newArch = std::make_shared<XrdCl::ZipArchive>(
 					Config::Instance().enable_plugins);
 			newArch->OpenArchive(newUrl,
@@ -653,6 +700,8 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 					<< " to " << newUrl << "\n" << std::flush;
 
 			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
+
+			index++;
 		}
 	}
 	if (handler)
@@ -737,6 +786,7 @@ void RepairTool::CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem) {
 void RepairTool::InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr){
 	XrdCl::Pipeline p;
 	if(zipptr->IsOpen()){
+		std::cout << "Closing and invalidating " << url << "\n" << std::flush;
 		std::vector<XrdCl::xattr_t> xav{ {"xrdec.corrupted", std::to_string(1)} };
 		p = XrdCl::SetXAttr( zipptr->archive, xav )
 		                          | XrdCl::CloseArchive( *zipptr);
@@ -836,9 +886,8 @@ void RepairTool::ReplaceURL(const std::string &url){
 		return;
 	}
 	if (objcfg.plgrReplace.size() > currentReplaceIndex) {
-			const std::string newUrl = objcfg.GetReplacementUrl(currentReplaceIndex);
 			const std::string replacementPlgr = objcfg.plgrReplace[currentReplaceIndex];
-// save a mapping from old to new urls so user knows where actual data is
+			// save a mapping from old to new urls so user knows where actual data is
 			redirectionMap[url] = replacementPlgr;
 			currentReplaceIndex++;
 		}else{
