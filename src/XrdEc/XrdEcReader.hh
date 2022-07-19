@@ -115,8 +115,7 @@ namespace XrdEc
                  uint32_t                length,
                  void                   *buffer,
                  XrdCl::ResponseHandler *handler,
-                 uint16_t                timeout,
-				 bool 					doRepair = true);
+                 uint16_t                timeout = 0);
 
       /*
        * Read multiple locations and lengths of data
@@ -143,8 +142,6 @@ namespace XrdEc
         return filesize;
       }
 
-      void DebuggingRead(size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
-
     private:
 
       //-----------------------------------------------------------------------
@@ -156,7 +153,7 @@ namespace XrdEc
       //! @param cb      : callback
       //! @param timeout : operation timeout
       //-----------------------------------------------------------------------
-      void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
+      void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
 
       //-----------------------------------------------------------------------
       //! Read metadata for the object
@@ -318,8 +315,7 @@ namespace XrdEc
   	                      uint32_t                  size,
   	                      char                     *usrbuff,
   	                      callback_t                usrcb,
-  	                      uint16_t                  timeout,
-						  bool 						doRepair = true)
+  	                      uint16_t                  timeout)
   	    {
   	    	std::unique_lock<std::mutex> lck( self->mtx );
 
@@ -329,7 +325,7 @@ namespace XrdEc
   	      if( self->state[strpid] == Empty )
   	      {
   	    	  self->reader.Read( self->blkid, strpid, self->stripes[strpid],
-  	                           read_callback( self, strpid, doRepair ), timeout );
+  	                           read_callback( self, strpid ), timeout );
   	        self->state[strpid] = Loading;
   	      }
   	      //---------------------------------------------------------------------
@@ -337,7 +333,7 @@ namespace XrdEc
   	      //---------------------------------------------------------------------
   	      if( self->state[strpid] == Missing )
   	      {
-  	        if(!doRepair || !error_correction( self ) )
+  	        if(!error_correction( self ) )
   	        {
   	          //-----------------------------------------------------------------
   	          // Recovery was not possible, notify the user of the error

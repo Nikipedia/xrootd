@@ -131,7 +131,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
         // Write new content to disk
         auto st = writer->WriteChunk(self, strpid);
         if(!st.IsOK()){
-        	std::cout<<"Writing to archive failed\n"<<std::flush;
+        	std::cout<<"Writing to archive failed: " << st.GetErrorMessage()<< "\n"<<std::flush;
         	      std::for_each( self->state.begin(), self->state.end(),
         	                     []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
         	      writer->repairFailed = true;
@@ -202,6 +202,7 @@ callback_t RepairTool::read_callback(std::shared_ptr<ThreadEndSemaphore> sem, si
 		if(sem != nullptr && !st.IsOK()){
 			std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nFile: "
 					<< tool->objcfg.GetFileName(blkid, strpid) << "\n" << std::flush;
+			tool->st->status = XrdCl::stError;
 		}
 	};
 }
@@ -210,14 +211,17 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 	XrdCl::SyncResponseHandler handler1;
 	TryOpen(&handler1, XrdCl::OpenFlags::Read, 0);
 	handler1.WaitForResponse();
+	st = handler1.GetStatus();
 	if (handler1.GetStatus()->IsOK())
 	{
+
 		auto itr = redirectionMap.begin();
 		for (; itr != redirectionMap.end(); ++itr)
 		{
 			const std::string &oldUrl = itr->first;
 			std::cout << "Archive contains some damaged metadata: " << oldUrl << "\n" << std::flush;
 			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
+			st->status = XrdCl::stError;
 		}
 	}
 	// do the read for each strpid and blkid but with different callback func
@@ -237,15 +241,21 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 				std::shared_ptr<buffer_t> buffer = std::make_shared<buffer_t>();
 				buffer->reserve(objcfg.chunksize);
 				buffers.push_back(buffer);
-				reader.DebuggingRead(blkid, strpid, *buffer,
+				Read(blkid, strpid, *buffer,
 						RepairTool::read_callback(ptr, blkid, strpid, this));
 			}
 		}
 	}
 	sem->Wait();
+	for(size_t u = 0; u < objcfg.plgr.size(); u++){
+		writeDataarchs[objcfg.GetDataUrl(u)]= readDataarchs[objcfg.GetDataUrl(u)];
+	}
+	XrdCl::SyncResponseHandler handler2;
+	CloseAllArchives(&handler2);
+	handler2.WaitForResponse();
 	if (handler)
 	{
-		handler->HandleResponse(handler1.GetStatus(), nullptr);
+		handler->HandleResponse(new XrdCl::XRootDStatus(*st), nullptr);
 	}
 }
 
@@ -825,12 +835,12 @@ void RepairTool::ReplaceURL(const std::string &url){
 		urlMutex.unlock();
 		return;
 	}
-	if (objcfg.plgrReplace.size() > 0) {
-			const std::string newUrl = objcfg.GetReplacementUrl(0);
-			const std::string replacementPlgr = objcfg.plgrReplace[0];
-			objcfg.plgrReplace.erase(objcfg.plgrReplace.begin());
+	if (objcfg.plgrReplace.size() > currentReplaceIndex) {
+			const std::string newUrl = objcfg.GetReplacementUrl(currentReplaceIndex);
+			const std::string replacementPlgr = objcfg.plgrReplace[currentReplaceIndex];
 // save a mapping from old to new urls so user knows where actual data is
 			redirectionMap[url] = replacementPlgr;
+			currentReplaceIndex++;
 		}else{
 			// TODO: throw error if there's no new url
 			std::cout << "Critical error, can't find replacement host for " << url << "\n" << std::flush;

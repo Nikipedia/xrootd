@@ -137,8 +137,7 @@ namespace XrdEc
                      uint32_t                length,
                      void                   *buffer,
                      XrdCl::ResponseHandler *handler,
-                     uint16_t                timeout,
-					 bool 					 doRepair)
+                     uint16_t                timeout)
   {
     if( objcfg.nomtfile )
     {
@@ -219,7 +218,7 @@ namespace XrdEc
       //-------------------------------------------------------------------
       // Read data from a stripe
       //-------------------------------------------------------------------
-      block_t::read( blk, strpid, rdoff, rdsize, usrbuff, callback, timeout, doRepair );
+      block_t::read( blk, strpid, rdoff, rdsize, usrbuff, callback, timeout);
       //-------------------------------------------------------------------
       // Update absolute offset, read length, and user buffer
       //-------------------------------------------------------------------
@@ -257,15 +256,10 @@ namespace XrdEc
     else XrdCl::Async( XrdCl::Parallel( closes ) >> handler, timeout );
   }
 
-  void Reader::DebuggingRead(size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout)
-  {
-	  Read(blknb, strpnb, buffer, cb, timeout, true);
-  }
-
   //-------------------------------------------------------------------------
   // on-definition is not allowed here beforeiven stripes from given block
   //-------------------------------------------------------------------------
-  void Reader::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout, bool exactControl )
+  void Reader::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout )
   {
     // generate the file name (blknb/strpnb)
     std::string fn = objcfg.GetFileName( blknb, strpnb );
@@ -298,130 +292,46 @@ namespace XrdEc
     // issue the read request
 	XrdCl::Async(
 			XrdCl::ReadFrom(*zipptr, fn, 0, rdsize, buffer.data())
-					>> [zipptr, fn, cb, &buffer, exactControl, this, url,
-							timeout](XrdCl::XRootDStatus &st,
-							XrdCl::ChunkInfo &ch)
+					>> [zipptr, fn, cb, &buffer, this, url, timeout](
+							XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch)
 							{
 								//---------------------------------------------------
 								// If read failed there's nothing to do, just pass the
 								// status to user callback
 								//---------------------------------------------------
-								if( !st.IsOK() )
-								{
-									cb( XrdCl::XRootDStatus(st.status, XrdCl::errNotFound, 0, "Read failed"), 0 );
-									return;
-								}
-								//---------------------------------------------------
-								// Get the checksum for the read data
-								//---------------------------------------------------
-								uint32_t orgcksum = 0;
-								//auto s = zipptr->GetCRC32( fn, orgcksum );
-								auto s = zipptr->GetCRC32(fn, orgcksum);
-								//---------------------------------------------------
-								// If we cannot extract the checksum assume the data
-								// are corrupted
-								//---------------------------------------------------
-								if( !s.IsOK() )
-								{
-									cb( XrdCl::XRootDStatus(s.status, s.code, s.errNo, "Chksum fail"), 0 );
-									return;
-								}
-								// optionally also checks LFH against CDFH
-								if (exactControl)
-								{
-									auto cditr = zipptr->cdmap.find(fn);
-									if (cditr == zipptr->cdmap.end())
-									{
-										cb(XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errNotFound, 0, "File not found in CD."),0);
-										return;
-									}
-									XrdZip::CDFH *cdfh =
-									zipptr->cdvec[cditr->second].get();
-									uint32_t offset = XrdZip::CDFH::GetOffset(*cdfh);
-									uint64_t cdOffset =
-									zipptr->zip64eocd ?
-									zipptr->zip64eocd->cdOffset :
-									zipptr->eocd->cdOffset;
-									uint64_t nextRecordOffset =
-									(cditr->second + 1 < zipptr->cdvec.size()) ?
-									XrdZip::CDFH::GetOffset(
-											*zipptr->cdvec[cditr->second
-											+ 1]) :
-									cdOffset;
-									auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
-									std::shared_ptr<buffer_t> lfhbuf;
-									lfhbuf = std::make_shared<buffer_t>();
-									lfhbuf->reserve(readSize);
-									XrdCl::Pipeline p = XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
-									[=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
-									{
-										if (st.IsOK())
-										{
-											try
-											{
-												XrdZip::LFH lfh(lfhbuf->data());
-												if (lfh.ZCRC32 != orgcksum||
-														lfh.compressedSize != cdfh->compressedSize||
-														lfh.compressionMethod != cdfh->compressionMethod||
-														lfh.extraLength != cdfh->extraLength||
-														lfh.filename != cdfh->filename||
-														lfh.filenameLength != cdfh->filenameLength||
-														lfh.generalBitFlag != cdfh->generalBitFlag||
-														lfh.minZipVersion != cdfh->minZipVersion||
-														lfh.uncompressedSize != cdfh->uncompressedSize)
-												{
-													cb(XrdCl::XRootDStatus(XrdCl::stError, XrdCl::errCorruptedHeader, 0, "LFH!=CDFH"),0);
-												}
-												// LFH header and CDFH header are the same
-												else
-												{
-													//---------------------------------------------------
-													// Verify data integrity
-													//---------------------------------------------------
-													uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
-													if( orgcksum != cksum )
-													{
-														cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errCheckSumError, 0, "Chksum of data and cdfh not equal" ), 0 );
-														return;
-													}
-													// checksums identical, call with positive response
-													cb(XrdCl::XRootDStatus(), ch.length);
-												}
-												return;
-											}
-											catch (const std::exception &e)
-											{
-
-											}
-											cb(XrdCl::XRootDStatus(XrdCl::stError,XrdCl::errCorruptedHeader,0,"Couldn't parse lfh"),0);
-											return;
-										}
-										else
-										{
-											cb(XrdCl::XRootDStatus(st.status, st.code, st.errNo, "ReadFrom err"), 0);
-											return;
-										}
-									};
-									Async( std::move( p ), timeout );
-									return;
-								}
-								else{
-									//---------------------------------------------------
-									// Verify data integrity
-									//---------------------------------------------------
-									uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
-									if( orgcksum != cksum )
-									{
-										cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errCheckSumError, 0, "Chksum of data and cdfh not equal" ), 0 );
-										return;
-									}
-									//---------------------------------------------------
-									// All is good, we can call now the user callback
-									//---------------------------------------------------
-									cb(XrdCl::XRootDStatus(), ch.length);
-									return;
-								}
-							}, timeout);
+							if( !st.IsOK() )
+							{
+								cb( XrdCl::XRootDStatus(st.status, XrdCl::errNotFound, 0, "Read failed"), 0 );
+								return;
+							}
+							//---------------------------------------------------
+							// Get the checksum for the read data
+							//---------------------------------------------------
+							uint32_t orgcksum = 0;
+							//auto s = zipptr->GetCRC32( fn, orgcksum );
+							auto s = zipptr->GetCRC32(fn, orgcksum);
+							//---------------------------------------------------
+							// If we cannot extract the checksum assume the data
+							// are corrupted
+							//---------------------------------------------------
+							if( !s.IsOK() )
+							{
+								cb( XrdCl::XRootDStatus(s.status, s.code, s.errNo, "Chksum fail"), 0 );
+								return;
+							}
+							//---------------------------------------------------
+							// Verify data integrity
+							//---------------------------------------------------
+							uint32_t cksum = objcfg.digest( 0, ch.buffer, ch.length );
+							if( orgcksum != cksum )
+							{
+								cb( XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errCheckSumError, 0, "Chksum of data and cdfh not equal" ), 0 );
+								return;
+							}
+							// checksums identical, call with positive response
+							cb(XrdCl::XRootDStatus(), ch.length);
+							return;
+						}, timeout);
 }
 
   //-----------------------------------------------------------------------
