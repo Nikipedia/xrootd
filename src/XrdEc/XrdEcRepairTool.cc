@@ -266,10 +266,10 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	RepairTool::OpenInUpdateMode(&handler1);
 	handler1.WaitForResponse();
 
-	std::cout<<"Open called\n"<<std::flush;
-	for(auto it = urlmap.begin(); it != urlmap.end(); it++){
+	std::cout<<"Opened archives\n"<<std::flush;
+	/*for(auto it = urlmap.begin(); it != urlmap.end(); it++){
 		std::cout << "Map key " << (*it).first << " to " << (*it).second << "\n" << std::flush;
-	}
+	}*/
 	checkAfterRepair = checkAgainAfterRepair;
 
 	chunksRepaired.store(0);
@@ -278,7 +278,6 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
 	CheckBlock();
-	std::cout<<"Out of Check Block of main repair method\n"<< std::flush;
 	repairVar.wait(lk, [this]{return this->finishedRepair && this->chunkRepairsWritten.load() == this->chunksRepaired.load();});
 	lk.unlock();
 
@@ -286,7 +285,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	CloseAllArchives(&handlerClose, 0);
 	handlerClose.WaitForResponse();
 
-	std::cout<<"Out of Archive Closing of main repair method\n"<< std::flush;
+	std::cout<<"Archives closed\n"<< std::flush;
 
 
 		for(size_t i = 0; i < objcfg.nbchunks; i++){
@@ -727,7 +726,7 @@ XrdCl::Pipeline RepairTool::CheckHealthExists(size_t index){
 		  return XrdCl::GetXAttr( readDataarchs[url]->GetFile(), "xrdec.corrupted" ) >>
 	          [index, url, this]( XrdCl::XRootDStatus &st, std::string &damage)
 	          {
-			  std::cout << "Attempt to read health\n" << std::flush;
+			  //std::cout << "Attempt to read health\n" << std::flush;
 				if (st.IsOK()) {
 					try {
 						int damaged = std::stoi(damage);
@@ -861,7 +860,7 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 						// All is good
 						//---------------------------------------------------
 						else {
-							std::cout << "Header checked " << fn << "\n" << std::flush;
+							//std::cout << "Header checked " << fn << "\n" << std::flush;
 							return;
 						}
 					} catch (const std::exception &e) {

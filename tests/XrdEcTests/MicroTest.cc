@@ -104,15 +104,15 @@ class MicroTest: public CppUnit::TestCase
      */
     inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType, bool mustHaveErrors = true){
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
-    	//uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
+    	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	uint64_t seed = 1658220234339992262;
+    	//uint64_t seed = 1658220234339992262;
     	randomSeed = seed;
 
     	InitRepair(usecrc32c);
-    	//uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
+    	uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	uint64_t seed2= 1658220234340324038;
+    	//uint64_t seed2= 1658220234340324038;
 
     	std::cout << "Random Seed FileGen: " << seed << " Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
