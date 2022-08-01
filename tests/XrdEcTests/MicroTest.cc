@@ -106,13 +106,13 @@ class MicroTest: public CppUnit::TestCase
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
     	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed = 1658220234339992262;
+    	//uint64_t seed = 1659342605819550189;
     	randomSeed = seed;
 
     	InitRepair(usecrc32c);
     	uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed2= 1658220234340324038;
+    	//uint64_t seed2= 1659342605819826703;
 
     	std::cout << "Random Seed FileGen: " << seed << " Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
