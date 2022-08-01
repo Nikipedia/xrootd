@@ -746,8 +746,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
       chunks.emplace_back( cdoff, wrtbuff->size(), wrtbuff->data() );
       wrtbufs.emplace_back( std::move( wrtbuff ) );
 
-      std::cout << "Attempt to close after writing CD\n"<<std::flush;
-
       Pipeline p = XrdCl::VectorWrite( archive, chunks );
       if( ckpinit )
         p       |= XrdCl::Checkpoint( archive, ChkPtCode::COMMIT );
@@ -776,7 +774,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
       return XRootDStatus();
     }
 
-    std::cout << "Attempt to close without writing CD\n"<<std::flush;
+    //std::cout << "Attempt to close without writing CD\n"<<std::flush;
     //-------------------------------------------------------------------------
     // Otherwise, just close the ZIP archive
     //-------------------------------------------------------------------------
@@ -819,7 +817,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
   XRootDStatus ZipArchive::WriteFileInto(const std::string &fn, uint64_t relativeOffset,
   		uint32_t size, uint32_t chksum, const void *usrbuff, ResponseHandler *handler,
   		uint16_t timeout) {
-	  if (openstage != ZipArchive::Done || archive.IsOpen())
+	  if (openstage != ZipArchive::Done || !archive.IsOpen())
 	  		return XRootDStatus(stError, errInvalidOp);
 
 	  	Log *log = DefaultEnv::GetLog();
@@ -1005,7 +1003,7 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     auto wrthandler = [=]( const XRootDStatus &st ) mutable
                       {
                         if( st.IsOK() ) {
-                        	std::cout << "Successful writing\n" << std::flush;
+                        	//std::cout << "Successful writing\n" << std::flush;
                         	updated = true;
                         }
                         else std::cout << "Error on writing\n" << std::flush;
