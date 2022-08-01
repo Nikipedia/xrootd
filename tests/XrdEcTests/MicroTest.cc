@@ -107,13 +107,13 @@ class MicroTest: public CppUnit::TestCase
     	std::cout<<"Repair Test started\n\n\n\n"<<std::flush;
     	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed = 1659342605819550189;
+    	//uint64_t seed = 1659352640126287244;
     	randomSeed = seed;
 
     	InitRepair(usecrc32c);
     	uint64_t seed2 = std::chrono::system_clock::now().time_since_epoch().count();
     	//last error:
-    	//uint64_t seed2= 1659342605819826703;
+    	//uint64_t seed2= 1659352640126630918;
 
     	std::cout << "Random Seed FileGen: " << seed << " Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
@@ -463,20 +463,17 @@ void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 		uint64_t host = hostToCorrupt(random_engine);
 		hosts.emplace_back(host);
 	}
-
+	Reader reader(*objcfg);
+	// open the data object
+	XrdCl::SyncResponseHandler handler1;
+	reader.Open(&handler1);
+	handler1.WaitForResponse();
+	XrdCl::XRootDStatus *status = handler1.GetStatus();
+	CPPUNIT_ASSERT_XRDST(*status);
+	delete status;
 	for(size_t h = 0; h < nbdata+nbparity; h++){
-		Reader reader(*objcfg);
-			// open the data object
-			XrdCl::SyncResponseHandler handler1;
-			reader.Open(&handler1);
-			handler1.WaitForResponse();
-			XrdCl::XRootDStatus *status = handler1.GetStatus();
-			CPPUNIT_ASSERT_XRDST(*status);
-			delete status;
-
 			// get the CD buffer
-			std::string fn = objcfg->GetFileName(0, h);
-			std::string url = reader.urlmap[fn];
+			std::string url = objcfg->GetDataUrl(h);
 			auto zipptr = reader.dataarchs[url];
 			uint64_t cdOffset =
 					zipptr->zip64eocd ?
@@ -485,16 +482,14 @@ void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 			uint64_t eocdLength = XrdZip::EOCD::eocdBaseSize;
 
 			maxCorruptSizes.emplace_back(cdOffset + cdLength + eocdLength);
-
-			// close the data object
-			XrdCl::SyncResponseHandler handler2;
-			reader.Close(&handler2);
-			handler2.WaitForResponse();
-			status = handler2.GetStatus();
-			CPPUNIT_ASSERT_XRDST(*status);
-			delete status;
-
 	}
+	// close the data object
+	XrdCl::SyncResponseHandler handler2;
+	reader.Close(&handler2);
+	handler2.WaitForResponse();
+	status = handler2.GetStatus();
+	CPPUNIT_ASSERT_XRDST(*status);
+	delete status;
 
 	for(size_t i = 0; i < numCorruptions; i++){
 		std::string url = objcfg->GetDataUrl(hosts[i]);

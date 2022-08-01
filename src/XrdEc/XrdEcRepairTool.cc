@@ -78,7 +78,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
           default: ;
         }
       } );
-
+    std::cout << "valid: " << validcnt << ", missing " << missingcnt << "\n" << std::flush;
 	if(validcnt == writer->objcfg.nbchunks){
     	// both check_block and update_callback will skip to the next block by returning false.
     	return false;
@@ -96,9 +96,10 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       return false;
     }
     //---------------------------------------------------------------------
-    // Check if we can do the recovery right away
+    // Only do the recovery once every chunk was analyzed
+    // the redundancy results are cached so errors might be overlooked otherwise
     //---------------------------------------------------------------------
-    if( validcnt >= self->objcfg.nbdata && missingcnt > 0 )
+    if( missingcnt > 0 && validcnt + missingcnt == self->objcfg.nbchunks )
     {
 
       Config &cfg = Config::Instance();
@@ -175,6 +176,7 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 	return [self, tool, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		std::unique_lock<std::mutex> lck(tool->blkmtx);
 		self->state[strpid] = st.IsOK() ? self->Valid : self->Missing;
+		std::cout << (st.IsOK() ? "OK for " : "Corrupted ") << self->blkid << "." << strpid << "\n" << std::flush;
 		if(st.IsOK()){
 			tool->block->stripes[strpid].resize(length);
 		}
@@ -210,7 +212,6 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 	st = handler1.GetStatus();
 	if (handler1.GetStatus()->IsOK())
 	{
-
 		auto itr = redirectionMap.begin();
 		for (; itr != redirectionMap.end(); ++itr)
 		{
@@ -848,7 +849,7 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 			(cditr->second + 1 < zipptr->cdvec.size()) ?
 					XrdZip::CDFH::GetOffset(*zipptr->cdvec[cditr->second + 1]) :
 					cdOffset;
-	auto readSize = (nextRecordOffset - offset) - cdfh->uncompressedSize;
+	auto readSize = (nextRecordOffset - offset) - cdfh->compressedSize;
 	//- objcfg.chunksize;
 	std::shared_ptr<buffer_t> lfhbuf;
 	lfhbuf = std::make_shared<buffer_t>();
@@ -1141,7 +1142,7 @@ void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t
 													*zipptr->cdvec[cditr->second
 															+ 1]) :
 											cdOffset;
-							auto readSize = (nextRecordOffset - offset)- cdfh->uncompressedSize;
+							auto readSize = (nextRecordOffset - offset)- cdfh->compressedSize;
 																//- objcfg.chunksize;
 							std::shared_ptr<buffer_t> lfhbuf;
 							lfhbuf = std::make_shared<buffer_t>();
