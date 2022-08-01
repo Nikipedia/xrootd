@@ -128,6 +128,8 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       for( size_t strpid = 0; strpid < self->objcfg.nbchunks; ++strpid )
       {
         if( self->state[strpid] != block_t::Recovering ) continue;
+        // we expect one more repair/write
+        writer->chunksRepaired.fetch_add(1);
         // Write new content to disk
         auto st = writer->WriteChunk(self, strpid);
         if(!st.IsOK()){
@@ -137,20 +139,14 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
         	      writer->repairFailed = true;
         	      return false;
         }
-        // TODO: Check this code
-        if(writer->checkAfterRepair){
-        	writer->Read( self->blkid, strpid, self->stripes[strpid],
-        	                   RepairTool::update_callback( self, writer, strpid ), 0, true );
-        }
-        else{
-        	writer->chunksRepaired.fetch_add(1);
-        	self->state[strpid] = block_t::Valid;
-        	validcnt++;
-        	if(validcnt == writer->objcfg.nbchunks){
-        			std::cout<<"All Errors corrected\n"<<std::flush;
-        	    	return false;
-        	    }
-        }
+			self->state[strpid] = block_t::Valid;
+			validcnt++;
+			if (validcnt == writer->objcfg.nbchunks)
+			{
+				std::cout << "All Errors corrected\n" << std::flush;
+				return false;
+			}
+
       }
       return true;
     }
@@ -421,10 +417,10 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 		}
 	}
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
-				std::cout << "Write call failed\n" << std::flush;
-				chunkRepairsWritten.fetch_add(1);
-				repairVar.notify_all();
-	return XrdCl::XRootDStatus(XrdCl::stError, "Couldnt write to archive");
+	chunkRepairsWritten.fetch_add(1);
+	std::cout << "Write failed, increased counter to "<<chunkRepairsWritten.load() << "\n" << std::flush;
+	repairVar.notify_all();
+	return XrdCl::XRootDStatus(XrdCl::stError, "Can't write, archive not open");
 }
 
 //---------------------------------------------------------------------------
@@ -682,25 +678,46 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 		for(; readItr != readDataarchs.end(); ++readItr){
 			writeDataarchs.emplace(readItr->first, readItr->second);
 		}
-		auto itr = redirectionMap.begin();
-		size_t index = 0;
-		for (; itr != redirectionMap.end(); ++itr)
-		{
-			const std::string &oldUrl = itr->first;
-			// the redirection map saves the plgr without the "test.txt" file name for easier future replacement
-			const std::string &newUrl = objcfg.GetReplacementUrl(index);
-			auto newArch = std::make_shared<XrdCl::ZipArchive>(
-					Config::Instance().enable_plugins);
-			newArch->OpenArchive(newUrl,
-					XrdCl::OpenFlags::New | XrdCl::OpenFlags::Write, nullptr,
-					0);
-			writeDataarchs[oldUrl] = newArch;
-			std::cout << "Creating new archive pointing from url " << oldUrl
-					<< " to " << newUrl << "\n" << std::flush;
+		if(redirectionMap.size() > 0){
+			std::vector<XrdCl::Pipeline> opens;
+			opens.reserve(redirectionMap.size());
+			auto itr = redirectionMap.begin();
+			size_t index = 0;
+			for (; itr != redirectionMap.end(); ++itr)
+			{
+				const std::string &oldUrl = itr->first;
+				// the redirection map saves the plgr without the "test.txt" file name for easier future replacement
+				const std::string &newUrl = objcfg.GetReplacementUrl(index);
+				auto newArch = std::make_shared<XrdCl::ZipArchive>(
+						Config::Instance().enable_plugins);
 
-			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
+				writeDataarchs[oldUrl] = newArch;
 
-			index++;
+				opens.emplace_back(
+						XrdCl::OpenArchive(*writeDataarchs[oldUrl], newUrl,
+								XrdCl::OpenFlags::New
+										| XrdCl::OpenFlags::Write));
+
+				std::cout << "Created new archive pointing from url " << oldUrl
+						<< " to " << newUrl << "\n" << std::flush;
+
+				InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
+
+				index++;
+			}
+			auto pipefinal =
+					[=](
+							const XrdCl::XRootDStatus &st)
+							{
+								if (handler)
+								{
+									handler->HandleResponse(new XrdCl::XRootDStatus(st), nullptr);
+								}
+							};
+			XrdCl::Pipeline p = XrdCl::Parallel(opens)
+					| XrdCl::Final(pipefinal);
+			XrdCl::Async(std::move(p));
+			return;
 		}
 	}
 	if (handler)
