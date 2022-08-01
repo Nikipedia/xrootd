@@ -68,6 +68,7 @@ class MicroTest: public CppUnit::TestCase
       CPPUNIT_TEST( AlignedRepairOneChunkTest);
       CPPUNIT_TEST( RandomizedRepairTest );
       CPPUNIT_TEST( RepairNoCorruptionTest );
+      CPPUNIT_TEST( RandomizedDoubleRepairTest );
     CPPUNIT_TEST_SUITE_END();
 
     int testedChunkCount;
@@ -117,18 +118,16 @@ class MicroTest: public CppUnit::TestCase
     	std::cout << "Random Seed FileGen: " << seed << " Random Seed Corruption: " << seed2<<"\n" << std::flush;
 
 		// run the test
-    	if(corruptionType == 2)
-    		AlignedRandomWriteRaw(seed);
-    	else{
-    		AlignedWriteRaw();
-    	}
+
+    	AlignedRandomWriteRaw(seed);
 
     	Verify(false);
 
     	switch(corruptionType){
     	case 0: UrlNotReachable(4); break;
     	case 1: CorruptChunk(1,1); break;
-    	case 2: CorruptRandom(seed2); break;
+    	case 2: CorruptRandom(seed2, 1); break;
+    	case 3: CorruptRandom(seed2, 2); break;
     	default: break;
     	}
     	if(mustHaveErrors)
@@ -173,7 +172,11 @@ class MicroTest: public CppUnit::TestCase
     }
 
     inline void RepairNoCorruptionTest(){
-    	AlignedRepairTestImpl(true, 3, false);
+    	AlignedRepairTestImpl(true, -1, false);
+    }
+
+    inline void RandomizedDoubleRepairTest(){
+    	AlignedRepairTestImpl(true, 3);
     }
 
     inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
@@ -307,7 +310,7 @@ class MicroTest: public CppUnit::TestCase
 
     void CorruptChunk( size_t blknb, size_t strpnb );
 
-    void CorruptRandom(uint64_t seed);
+    void CorruptRandom(uint64_t seed, uint32_t numCorruptions);
 
     void UrlNotReachable( size_t index );
     void UrlReachable( size_t index );
@@ -451,43 +454,54 @@ void MicroTest::CorruptChunk( size_t blknb, size_t strpnb )
   CPPUNIT_ASSERT_XRDST( status2 );
 }
 
-void MicroTest::CorruptRandom(uint64_t seed){
+void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 	static std::default_random_engine random_engine(seed);
 	std::uniform_int_distribution<uint32_t> hostToCorrupt(0, nbdata+nbparity-1);
-	uint64_t host = hostToCorrupt(random_engine);
+	std::vector<uint64_t> hosts;
+	std::vector<uint64_t> maxCorruptSizes;
+	for(size_t i = 0; i < numCorruptions; i++){
+		uint64_t host = hostToCorrupt(random_engine);
+		hosts.emplace_back(host);
+	}
 
+	for(size_t h = 0; h < nbdata+nbparity; h++){
+		Reader reader(*objcfg);
+			// open the data object
+			XrdCl::SyncResponseHandler handler1;
+			reader.Open(&handler1);
+			handler1.WaitForResponse();
+			XrdCl::XRootDStatus *status = handler1.GetStatus();
+			CPPUNIT_ASSERT_XRDST(*status);
+			delete status;
 
-	Reader reader(*objcfg);
-	// open the data object
-	XrdCl::SyncResponseHandler handler1;
-	reader.Open(&handler1);
-	handler1.WaitForResponse();
-	XrdCl::XRootDStatus *status = handler1.GetStatus();
-	CPPUNIT_ASSERT_XRDST(*status);
-	delete status;
+			// get the CD buffer
+			std::string fn = objcfg->GetFileName(0, h);
+			std::string url = reader.urlmap[fn];
+			auto zipptr = reader.dataarchs[url];
+			uint64_t cdOffset =
+					zipptr->zip64eocd ?
+							zipptr->zip64eocd->cdOffset : zipptr->eocd->cdOffset;
+			uint64_t cdLength = zipptr->zip64eocd? zipptr->zip64eocd->cdSize:zipptr->eocd->cdSize;
+			uint64_t eocdLength = XrdZip::EOCD::eocdBaseSize;
 
-	// get the CD buffer
-	std::string fn = objcfg->GetFileName(0, host);
-	std::string url = reader.urlmap[fn];
-	auto zipptr = reader.dataarchs[url];
-	uint64_t cdOffset =
-			zipptr->zip64eocd ?
-					zipptr->zip64eocd->cdOffset : zipptr->eocd->cdOffset;
-	uint64_t cdLength = zipptr->zip64eocd? zipptr->zip64eocd->cdSize:zipptr->eocd->cdSize;
-	uint64_t eocdLength = XrdZip::EOCD::eocdBaseSize;
+			maxCorruptSizes.emplace_back(cdOffset + cdLength + eocdLength);
 
-	// close the data object
-	XrdCl::SyncResponseHandler handler2;
-	reader.Close(&handler2);
-	handler2.WaitForResponse();
-	status = handler2.GetStatus();
-	CPPUNIT_ASSERT_XRDST(*status);
-	delete status;
+			// close the data object
+			XrdCl::SyncResponseHandler handler2;
+			reader.Close(&handler2);
+			handler2.WaitForResponse();
+			status = handler2.GetStatus();
+			CPPUNIT_ASSERT_XRDST(*status);
+			delete status;
 
-	std::stringstream ss;
-	ss << "cp " << url << " " << url << "_noncorrupt";
-	std::string s = ss.str();
-	system(s.data());
+	}
+
+	for(size_t i = 0; i < numCorruptions; i++){
+		std::string url = objcfg->GetDataUrl(hosts[i]);
+		std::stringstream ss;
+		ss << "cp " << url << " " << url << "_noncorrupt";
+		std::string s = ss.str();
+		system(s.data());
 
 	// now corrupt the host
 	XrdCl::File f;
@@ -499,7 +513,7 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	uint64_t size = lengthRandom(random_engine);
 	uint64_t writeSize = size;
 
-	std::uniform_int_distribution<uint32_t> offsetRandom(0, cdOffset + cdLength + eocdLength - size);
+	std::uniform_int_distribution<uint32_t> offsetRandom(0, maxCorruptSizes[hosts[i]] - size);
 	uint64_t offset = offsetRandom(random_engine);
 
 
@@ -520,7 +534,9 @@ void MicroTest::CorruptRandom(uint64_t seed){
 	CPPUNIT_ASSERT_XRDST(status2);
 	status2 = f.Close();
 	CPPUNIT_ASSERT_XRDST(status2);
-	std::cout << "Successfully corrupted archive";
+
+	}
+	std::cout << "Successfully corrupted archive\n" << std::flush;
 }
 
 void MicroTest::UrlNotReachable( size_t index )
