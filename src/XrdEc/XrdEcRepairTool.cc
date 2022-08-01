@@ -160,7 +160,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       size_t strpid = i++;
       if( self->state[strpid] != block_t::Empty ) continue;
       writer->Read( self->blkid, strpid, self->stripes[strpid],
-                         RepairTool::update_callback( self, writer, strpid ) ,0 , false);
+                         RepairTool::update_callback( self, writer, strpid ) ,0);
       self->state[strpid] = block_t::Loading;
       ++loadingcnt;
     }
@@ -849,7 +849,13 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 			(cditr->second + 1 < zipptr->cdvec.size()) ?
 					XrdZip::CDFH::GetOffset(*zipptr->cdvec[cditr->second + 1]) :
 					cdOffset;
-	auto readSize = (nextRecordOffset - offset) - cdfh->compressedSize;
+	int64_t readSize = (nextRecordOffset - offset) - cdfh->compressedSize;
+
+	if(readSize < 0){
+		ReplaceURL(url);
+		return;
+	}
+
 	//- objcfg.chunksize;
 	std::shared_ptr<buffer_t> lfhbuf;
 	lfhbuf = std::make_shared<buffer_t>();
@@ -1048,7 +1054,7 @@ XrdCl::Pipeline RepairTool::ReadMetadata(size_t index) {
 			});
 }
 
-void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout, bool exactControl )
+void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout )
 {
   // generate the file name (blknb/strpnb)
   std::string fn = objcfg.GetFileName( blknb, strpnb );
@@ -1086,7 +1092,7 @@ void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t
   buffer.resize( objcfg.chunksize );
   // issue the read request
   XrdCl::Async( XrdCl::ReadFrom( *zipptr, fn, 0, rdsize, buffer.data() ) >>
-                  [zipptr, fn, cb, &buffer, exactControl, this, url, timeout]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
+                  [zipptr, fn, cb, &buffer, this, url, timeout]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
                   {
                     //---------------------------------------------------
                     // If read failed there's nothing to do, just pass the
@@ -1120,120 +1126,12 @@ void RepairTool::Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t
                   	  cb( XrdCl::XRootDStatus( XrdCl::stError, "Chksum unequal" ), 0 );
                       return;
                     }
-                    if (exactControl) {
-							auto cditr = zipptr->cdmap.find(fn);
-							if (cditr == zipptr->cdmap.end())
-								{
-								cb(XrdCl::XRootDStatus(XrdCl::stError, "File not found."),0);
+								//---------------------------------------------------
+								// All is good, we can call now the user callback
+								//---------------------------------------------------
+								cb(XrdCl::XRootDStatus(), ch.length);
 								return;
-								}
 
-
-							XrdZip::CDFH *cdfh =
-									zipptr->cdvec[cditr->second].get();
-							uint32_t offset = XrdZip::CDFH::GetOffset(*cdfh);
-							uint64_t cdOffset =
-									zipptr->zip64eocd ?
-											zipptr->zip64eocd->cdOffset :
-											zipptr->eocd->cdOffset;
-							uint64_t nextRecordOffset =
-									(cditr->second + 1 < zipptr->cdvec.size()) ?
-											XrdZip::CDFH::GetOffset(
-													*zipptr->cdvec[cditr->second
-															+ 1]) :
-											cdOffset;
-							auto readSize = (nextRecordOffset - offset)- cdfh->compressedSize;
-																//- objcfg.chunksize;
-							std::shared_ptr<buffer_t> lfhbuf;
-							lfhbuf = std::make_shared<buffer_t>();
-							lfhbuf->reserve(readSize);
-							XrdCl::Pipeline p = XrdCl::Read(zipptr->archive, offset, readSize, lfhbuf->data(), timeout) >>
-							                   [=]( XrdCl::XRootDStatus &st, XrdCl::ChunkInfo &ch )
-							                   {
-												if (st.IsOK()) {
-													try {
-														XrdZip::LFH lfh(
-																lfhbuf->data());
-														if (lfh.ZCRC32
-																!= orgcksum){
-															cb(
-																	XrdCl::XRootDStatus(
-																			XrdCl::stError,
-																			"CRC LFH != CRC of CDFH"),
-																	0);
-															return;
-														}
-																if(lfh.compressedSize
-																		!= cdfh->compressedSize){
-																	cb(
-																			XrdCl::XRootDStatus(
-																					XrdCl::stError,
-																					"CompSize LFH !=CDFH"),
-																			0);
-																	return;
-																}
-																if( lfh.compressionMethod
-																		!= cdfh->compressionMethod
-																|| lfh.extraLength
-																		!= cdfh->extraLength
-																|| lfh.filename
-																		!= cdfh->filename
-																|| lfh.filenameLength
-																		!= cdfh->filenameLength
-																|| lfh.generalBitFlag
-																		!= cdfh->generalBitFlag
-																|| lfh.minZipVersion
-																		!= cdfh->minZipVersion){
-																	cb(
-																			XrdCl::XRootDStatus(
-																					XrdCl::stError,
-																					"LFH!=CDFH"),
-																			0);
-																	return;
-																}
-																if( lfh.uncompressedSize
-																		!= cdfh->uncompressedSize) {
-															cb(
-																	XrdCl::XRootDStatus(
-																			XrdCl::stError,
-																			"uncompSize LFH !=CDFH"),
-																	0);
-															return;
-														}
-														//---------------------------------------------------
-														// All is good, we can call now the user callback
-														//---------------------------------------------------
-														else {
-															cb(
-																	XrdCl::XRootDStatus(),
-																	ch.length);
-															return;
-														}
-													} catch (const std::exception &e) {
-
-													}
-													cb(
-															XrdCl::XRootDStatus(
-																	XrdCl::stError,
-																	XrdCl::errCorruptedHeader,
-																	0,
-																	"Couldnt parse lfh"),
-															0);
-													return;
-												} else {
-													cb(XrdCl::XRootDStatus(st.status, st.code, st.errNo, "ReadFrom err"), 0);
-																					return;
-												}
-											};
-							    Async( std::move( p ), timeout );
-							    return;
-						} else {
-							//---------------------------------------------------
-							// All is good, we can call now the user callback
-							//---------------------------------------------------
-							cb(XrdCl::XRootDStatus(), ch.length);
-							return;
-						}
                   }, timeout );
 }
 

@@ -152,7 +152,7 @@ private:
      * @param timeout
      * @param exactControl
      */
-	void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0, bool exactControl = false);
+	void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
 	/**
 	 * Sets the state of the stripe we read to okay or missing and calls error correction again.
 	 * @param self
