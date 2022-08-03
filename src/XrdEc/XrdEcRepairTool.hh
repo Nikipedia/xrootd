@@ -58,8 +58,7 @@ public:
 	RepairTool(ObjCfg &objcfg) :
 			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0),
 			checkAfterRepair(false){
-		currentBlockChecked = 0;
-		redirectMapOffset = 0;
+		currentBlockChecked.store(0);
 		currentReplaceIndex = 0;
 		chunksRepaired.store(0);
 		repairFailed = false;
@@ -71,7 +70,7 @@ public:
 	}
 	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
 	void CheckFile(XrdCl::ResponseHandler *handler);
-	size_t currentBlockChecked;
+	std::atomic<uint32_t> currentBlockChecked;
 	std::atomic<uint64_t> chunksRepaired;
 	std::atomic<uint64_t> chunkRepairsWritten;
 	bool repairFailed;
@@ -221,8 +220,6 @@ private:
 	std::mutex urlMutex;
 
 	XrdCl::XRootDStatus* st;
-
-    int redirectMapOffset;
 
 	std::mutex finishedRepairMutex;
 	std::condition_variable repairVar;

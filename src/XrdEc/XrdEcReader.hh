@@ -294,7 +294,8 @@ namespace XrdEc
   	                                                              state( objcfg.nbchunks, Empty ),
   	                                                              pending( objcfg.nbchunks ),
   	                                                              blkid( blkid ),
-  	                                                              recovering( 0 )
+  	                                                              recovering( 0 ),
+																  redirectionIndex( 0)
   	    {
   	    }
   	    //-----------------------------------------------------------------------
@@ -583,6 +584,7 @@ namespace XrdEc
   	    size_t                  blkid;      //< block ID
   	    bool                    recovering; //< true if we are in the process of recovering data, false otherwise
   	    std::mutex              mtx;
+  	    uint32_t redirectionIndex; 			// tracks to which replacement archives this block was written to so far
   };
 } /* namespace XrdEc */
 
