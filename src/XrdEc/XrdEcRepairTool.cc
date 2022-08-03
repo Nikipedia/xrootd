@@ -178,7 +178,7 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 		self->state[strpid] = st.IsOK() ? self->Valid : self->Missing;
 		std::cout << (st.IsOK() ? "OK for " : "Corrupted ") << self->blkid << "." << strpid << "\n" << std::flush;
 		if(st.IsOK()){
-			tool->block->stripes[strpid].resize(length);
+			self->stripes[strpid].resize(length);
 		}
 		//------------------------------------------------------------
 		// Check if we need to do any error correction (either for
@@ -198,8 +198,10 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 callback_t RepairTool::read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool) {
 	return [tool, sem, blkid, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		if(sem != nullptr && !st.IsOK()){
-			std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nFile: "
-					<< tool->objcfg.GetFileName(blkid, strpid) << "\n" << std::flush;
+			if(tool->urlmap.find(objcfg.GetFileName(blkid, strpid))!=tool->urlmap.end())
+				std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost: "
+					<< tool->urlmap[objcfg.GetFileName(blkid, strpid)] << "\n" << std::flush;
+			else std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost not found\n" << std::flush;
 			tool->st->status = XrdCl::stError;
 		}
 	};
@@ -284,23 +286,27 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 	std::cout<<"Archives closed\n"<< std::flush;
 
-
-		for(size_t i = 0; i < objcfg.nbchunks; i++){
-			if(redirectionMap.find(objcfg.GetDataUrl(i)) != redirectionMap.end()){
-				objcfg.plgr[i] = std::string(redirectionMap[objcfg.GetDataUrl(i)]);
-			}
+	for (size_t i = 0; i < objcfg.nbchunks; i++)
+	{
+		if (redirectionMap.find(objcfg.GetDataUrl(i)) != redirectionMap.end())
+		{
+			objcfg.plgr[i] = std::string(redirectionMap[objcfg.GetDataUrl(i)]);
 		}
-		for(auto it = objcfg.plgr.begin(); it != objcfg.plgr.end(); it++){
-					std::cout << "Host at " << *it << "\n" << std::flush;
-				}
-		for(auto it = redirectionMap.begin(); it != redirectionMap.end(); it++)
-							std::cout << "Redirect from " << it->first << " to " << it->second << "\n" << std::flush;
+	}
+	for (auto it = objcfg.plgr.begin(); it != objcfg.plgr.end(); it++)
+	{
+		std::cout << "Host at " << *it << "\n" << std::flush;
+	}
+	for (auto it = redirectionMap.begin(); it != redirectionMap.end(); it++)
+		std::cout << "Redirect from " << it->first << " to " << it->second
+				<< "\n" << std::flush;
 
-
-		std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired.load() << "\n" << std::flush;
-		if(repairFailed){
-			std::cout << "Repair failed at some point!\n"<<std::flush;
-		}
+	std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired.load() << "\n"
+			<< std::flush;
+	if (repairFailed)
+	{
+		std::cout << "Repair failed at some point!\n" << std::flush;
+	}
 
 }
 
