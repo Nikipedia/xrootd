@@ -185,9 +185,10 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 		// the current stripe, or any other stripe)
 		//------------------------------------------------------------
 		if(!error_correction(self, tool)){
-			tool->currentBlockChecked++;
+			tool->currentBlockChecked.fetch_add(1);
+			tool->repairVar.notify_all();
 			lck.unlock();
-			tool->CheckBlock();
+			//tool->CheckBlock();
 		}
 	};
 }
@@ -198,9 +199,9 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 callback_t RepairTool::read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool) {
 	return [tool, sem, blkid, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		if(sem != nullptr && !st.IsOK()){
-			if(tool->urlmap.find(objcfg.GetFileName(blkid, strpid))!=tool->urlmap.end())
+			if(tool->urlmap.find(tool->objcfg.GetFileName(blkid, strpid))!=tool->urlmap.end())
 				std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost: "
-					<< tool->urlmap[objcfg.GetFileName(blkid, strpid)] << "\n" << std::flush;
+					<< tool->urlmap[tool->objcfg.GetFileName(blkid, strpid)] << "\n" << std::flush;
 			else std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost not found\n" << std::flush;
 			tool->st->status = XrdCl::stError;
 		}
@@ -272,12 +273,15 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	checkAfterRepair = checkAgainAfterRepair;
 
 	chunksRepaired.store(0);
-	currentBlockChecked = 0;
+	currentBlockChecked.store(0);
+	// last blk is the index of the last (e.g. index 3 means we have 4 blocks -> currentBlockChecked must be 4 at the end)
+	uint32_t totalBlocks = lstblk + 1;
 	repairFailed = false;
 
-	std::unique_lock<std::mutex> lk(finishedRepairMutex);
+
 	CheckBlock();
-	repairVar.wait(lk, [this]{return this->finishedRepair && this->chunkRepairsWritten.load() == this->chunksRepaired.load();});
+	std::unique_lock<std::mutex> lk(finishedRepairMutex);
+	repairVar.wait(lk, [this, totalBlocks]{return this->finishedRepair && this->chunkRepairsWritten.load() == this->chunksRepaired.load() && this->currentBlockChecked.load() == totalBlocks;});
 	lk.unlock();
 
 	XrdCl::SyncResponseHandler handlerClose;
@@ -312,31 +316,29 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 void RepairTool::CheckBlock() {
 	std::unique_lock<std::mutex> lck(blkmtx);
-	redirectMapOffset = 0;
 	size_t totalBlocks = 0;
 	if (objcfg.nomtfile) {
-		totalBlocks = lstblk+1;
+		totalBlocks = lstblk + 1;
 	} else {
 		totalBlocks = lstblk + 1;
 	}
-	size_t blkid = currentBlockChecked;
-	if (blkid < totalBlocks) {
+	//size_t blkid = currentBlockChecked;
+	for (size_t blkid = 0; blkid < totalBlocks; blkid++) {
 		if (!block || block->blkid != blkid)
 			block = std::make_shared<block_t>(blkid, reader, objcfg);
 		auto blk = block;
 		// initiates the read for each stripe, at some point CheckBlock will be called again from somewhere else.
 		if (!error_correction(blk, this)) {
-			currentBlockChecked++;
-			lck.unlock();
-			CheckBlock();
+			currentBlockChecked.fetch_add(1);
+			//lck.unlock();
+			//CheckBlock();
+			std::cout << "Couldn't restore block " << blkid << "\n" << std::flush;
 		}
 	}
-	else {
-		std::unique_lock<std::mutex> lk(finishedRepairMutex);
-		std::cout << "Finished Repair init\n"<<std::flush;
-		finishedRepair = true;
-		repairVar.notify_all();
-	}
+	std::unique_lock<std::mutex> lk(finishedRepairMutex);
+	std::cout << "Finished Repair init\n" << std::flush;
+	finishedRepair = true;
+	repairVar.notify_all();
 
 }
 
@@ -351,19 +353,18 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 	{
 		std::cout << "Couldn't locate file " << fn << " for writing\n" << std::flush;
 		auto it = redirectionMap.begin();
-		int u = 0;
+		uint32_t u = 0;
 		while(it != redirectionMap.end()){
-			if(u >= redirectMapOffset) break;
+			if(u >= blk->redirectionIndex) break;
 			u++;
 			it++;
 		}
 		url = it->first;
-		redirectMapOffset++;
+		blk->redirectionIndex++;
 		std::cout << "Replacing it with host " << url << "\n" << std::flush;
 	}
 	else url = itr->second;
 	if(writeDataarchs[url]->IsOpen()){
-		std::string fn = objcfg.GetFileName( blkid, strpid );
 		auto it = writeDataarchs[url]->cdmap.find(fn);
 		uint64_t offset = 0;
 		int32_t actualSize = objcfg.chunksize;
@@ -381,8 +382,8 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 			if (actualSize < 0)
 				actualSize = 0;
 		}
-		std::cout << "Actual Write Size: " << actualSize
-				<< " because file size is " << filesize << "\n" << std::flush;
+		//std::cout << "Actual Write Size: " << actualSize
+		//		<< " because file size is " << filesize << "\n" << std::flush;
 
 		auto pipehndl = [=](const XrdCl::XRootDStatus &st) {
 			// increase the written counter by one (atomic)
