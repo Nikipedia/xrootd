@@ -48,7 +48,6 @@
 #include <iterator>
 #include <numeric>
 #include <tuple>
-#include <iostream>
 
 namespace XrdEc
 {
