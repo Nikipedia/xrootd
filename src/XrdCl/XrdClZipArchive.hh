@@ -67,8 +67,6 @@ namespace XrdCl
 
     template<typename RSP>
     friend XRootDStatus ReadFromImpl( ZipArchive&, const std::string&, uint64_t, uint32_t, void*, ResponseHandler*, uint16_t );
-    //template<typename RSP>
-    //friend XRootDStatus WriteIntoImpl(ZipArchive&, const std::string&, uint64_t, uint32_t, uint32_t, void*, ResponseHandler*, uint16_t );
     public:
       //-----------------------------------------------------------------------
       //! Constructor
