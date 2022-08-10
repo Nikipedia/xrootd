@@ -764,7 +764,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                      {
                        if( st.IsOK() ) Clear();
                        else {
-                    	   std::cout << "Close archive failed with code " << st.code << ", " << st.GetErrorMessage() << "\n" <<std::flush;
                     	   openstage = Error;
                        }
                      }
@@ -784,7 +783,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
       return XRootDStatus();
     }
 
-    //std::cout << "Attempt to close without writing CD\n"<<std::flush;
     //-------------------------------------------------------------------------
     // Otherwise, just close the ZIP archive
     //-------------------------------------------------------------------------
@@ -800,7 +798,6 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
                      else
                      {
                        openstage = Error;
-                       std::cout << "Close archive failed with code " << st.code << ", " << st.GetErrorMessage() << "\n" <<std::flush;
                        log->Error( ZipMsg, "[0x%x] Failed to close ZIP archive:"
                                            " %s", this, st.ToString().c_str() );
                      }
@@ -1013,10 +1010,8 @@ XRootDStatus WriteIntoImpl(ZipArchive &me, const std::string &fn,
     auto wrthandler = [=]( const XRootDStatus &st ) mutable
                       {
                         if( st.IsOK() ) {
-                        	//std::cout << "Successful writing\n" << std::flush;
                         	updated = true;
                         }
-                        else std::cout << "Error on writing\n" << std::flush;
                         lfhbuf.reset();
                         if( handler )
                           handler->HandleResponse( make_status( st ), nullptr );
