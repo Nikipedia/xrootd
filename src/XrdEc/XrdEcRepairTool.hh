@@ -68,8 +68,8 @@ public:
 	}
 	virtual ~RepairTool() {
 	}
-	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler);
-	void CheckFile(XrdCl::ResponseHandler *handler);
+	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
+	void CheckFile(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
 	std::atomic<uint32_t> currentBlockChecked;
 	std::atomic<uint64_t> chunksRepaired;
 	std::atomic<uint64_t> chunkRepairsWritten;
@@ -111,20 +111,20 @@ private:
 	 * Checks all LFHs against their CDFHs
 	 * @param sem Is passed to each check to increase reference count
 	 */
-	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem);
+	void CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t timeout);
 	/**
 	 * Reads and compares LFHs to the already read CDFHs and replaces and closes archives that have faulty metadata.
 	 * @param sem
 	 * @param blkid
 	 * @param strpid
 	 */
-	void CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t blkid, uint16_t strpid);
+	void CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint16_t blkid, uint16_t strpid, uint16_t timeout);
 	/**
 	 * Replaces archive with one on a different host, then closes old archive and marks it as corrupted.
 	 * @param url
 	 * @param zipptr
 	 */
-	void InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr);
+	void InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr, uint16_t timeout);
 	/**
 	 * Creates a new archive on a different host, adds an entry to redirectionMap but writeDataarchs keeps it in the same url entry for easier referencing.
 	 * @param url
@@ -134,14 +134,14 @@ private:
     //-----------------------------------------------------------------------
     //! Checks the block at currentBlockIndex and executes error correction
     //-----------------------------------------------------------------------
-	void CheckBlock();
+	void CheckBlock(uint16_t timeout);
 	/**
 	 * Checks all stripes of the current block. Returns false if the block is finished (in positive or negative way).
 	 * @param self
 	 * @param writer
 	 * @return
 	 */
-	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer );
+	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer, uint16_t timeout );
     /**
      * Initiates the actual read from disk, calls update_callback afterwards
      * @param blknb
@@ -159,7 +159,7 @@ private:
 	 * @param strpid
 	 * @return
 	 */
-	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid);
+	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid, uint16_t timeout);
 	/**
 	 * Used for CheckFile: If the read was unsuccessful due to corrupted data (checksum violation) message the user.
 	 * @param self
@@ -174,7 +174,7 @@ private:
 	 * @param strpid
 	 * @return
 	 */
-	XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid);
+	XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid, uint16_t timeout);
 
 	/**
 	 * Closes all archives in writeDataarchs and sets their corrupted flag to 0.
