@@ -69,6 +69,7 @@ class MicroTest: public CppUnit::TestCase
       CPPUNIT_TEST( RandomizedRepairTest );
       CPPUNIT_TEST( RepairNoCorruptionTest );
       CPPUNIT_TEST( RandomizedDoubleRepairTest );
+      CPPUNIT_TEST( RepairFailsTest );
     CPPUNIT_TEST_SUITE_END();
 
     int testedChunkCount;
@@ -103,7 +104,7 @@ class MicroTest: public CppUnit::TestCase
     /*
      * corruption type: 0 = missing host, 1 = single corrupt, 2 = random corrupt
      */
-    inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType, bool mustHaveErrors = true){
+    inline void AlignedRepairTestImpl(bool usecrc32c, int corruptionType, bool mustHaveErrors = true, bool repairFails = false){
     	uint64_t seed = std::chrono::system_clock::now().time_since_epoch().count();
 
     	randomSeed = seed;
@@ -124,6 +125,7 @@ class MicroTest: public CppUnit::TestCase
     	case 1: CorruptChunk(1,1); break;
     	case 2: CorruptRandom(seed2, 1); break;
     	case 3: CorruptRandom(seed2, 2); break;
+    	case 4: CorruptChunk(0, 0); CorruptChunk(0, 1); CorruptChunk(0,2); break;
     	default: break;
     	}
     	if(mustHaveErrors)
@@ -133,10 +135,14 @@ class MicroTest: public CppUnit::TestCase
 
 		XrdEc::RepairTool r(*objcfg);
 		r.RepairFile(false, nullptr);
-		if(mustHaveErrors)
-			CPPUNIT_ASSERT(r.chunksRepaired > 0);
+		if(!repairFails){
+			if(mustHaveErrors)
+				CPPUNIT_ASSERT(r.chunksRepaired > 0);
+			Verify(false);
+		}
+		else
+			CPPUNIT_ASSERT(r.repairFailed);
 
-		Verify(false);
 		// clean up
 		if(corruptionType == 0){
 			// have to set the plgr to the old one so the archives are deleted from disk correctly
@@ -164,6 +170,10 @@ class MicroTest: public CppUnit::TestCase
 
     inline void RandomizedDoubleRepairTest(){
     	AlignedRepairTestImpl(true, 3);
+    }
+
+    inline void RepairFailsTest(){
+    	AlignedRepairTestImpl(true, 4, true, true);
     }
 
     inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
