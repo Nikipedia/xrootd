@@ -41,6 +41,8 @@
 #include "XrdCl/XrdClZipOperations.hh"
 #include "XrdCl/XrdClFileOperations.hh"
 #include "XrdCl/XrdClFinalOperation.hh"
+#include "XrdCl/XrdClLog.hh"
+#include "XrdCl/XrdClDefaultEnv.hh"
 
 #include "XrdCl/XrdClLog.hh"
 #include "XrdCl/XrdClDefaultEnv.hh"
@@ -68,6 +70,7 @@ namespace XrdEc
   //---------------------------------------------------------------------------
   void Reader::Open( XrdCl::ResponseHandler *handler, uint16_t timeout )
   {
+	  auto log = XrdCl::DefaultEnv::GetLog();
     const size_t size = objcfg.plgr.size();
     std::vector<XrdCl::Pipeline> opens; opens.reserve( size );
     std::vector<XrdCl::Pipeline> healthRead; healthRead.reserve(size);
@@ -111,7 +114,7 @@ namespace XrdEc
 					if (blknb > lstblk)
 						lstblk = blknb;
 				} catch (std::invalid_argument&) {
-					std::cout << "Invalid file name detected\n" << std::flush;
+					log->Dump(XrdCl::XRootDMsg, "EC Reader Open: Invalid file name found");
 				}
 			}
 		}
@@ -489,7 +492,7 @@ namespace XrdEc
     	  metadata.emplace( url, buffer_t( buffer, buffer + lfh.uncompressedSize ) );
       }
       catch(const std::invalid_argument* e){
-    	  std::cout << "Invalid filename found";
+
       }
       buffer += lfh.uncompressedSize;
       length -= lfh.uncompressedSize;

@@ -42,12 +42,13 @@
 #include "XrdCl/XrdClFileOperations.hh"
 #include "XrdCl/XrdClFinalOperation.hh"
 #include "XrdCl/XrdClMessageUtils.hh"
+#include "XrdCl/XrdClLog.hh"
+#include "XrdCl/XrdClDefaultEnv.hh"
 
 #include <algorithm>
 #include <iterator>
 #include <numeric>
 #include <tuple>
-#include <iostream>
 #include <fstream>
 
 namespace XrdEc {
@@ -78,8 +79,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
           default: ;
         }
       } );
-    std::cout << "valid: " << validcnt << ", missing " << missingcnt << "\n" << std::flush;
-	if(validcnt == writer->objcfg.nbchunks){
+    if(validcnt == writer->objcfg.nbchunks){
     	// both check_block and update_callback will skip to the next block by returning false.
     	return false;
     }
@@ -89,7 +89,6 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
     //---------------------------------------------------------------------
     if( missingcnt + recoveringcnt > self->objcfg.nbparity )
     {
-    	std::cout<<"Recovery impossible\n"<<std::flush;
       std::for_each( self->state.begin(), self->state.end(),
                      []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
       writer->repairFailed = true;
@@ -134,7 +133,6 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
         // Write new content to disk
         auto st = writer->WriteChunk(self, strpid);
         if(!st.IsOK()){
-        	std::cout<<"Writing to archive failed: " << st.GetErrorMessage()<< "\n"<<std::flush;
         	      std::for_each( self->state.begin(), self->state.end(),
         	                     []( block_t::state_t &s ){ if( s == block_t::Recovering ) s = block_t::Missing; } );
         	      writer->repairFailed = true;
@@ -144,7 +142,6 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
 			validcnt++;
 			if (validcnt == writer->objcfg.nbchunks)
 			{
-				std::cout << "All Errors corrected\n" << std::flush;
 				return false;
 			}
 
@@ -176,7 +173,6 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 	return [self, tool, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		std::unique_lock<std::mutex> lck(tool->blkmtx);
 		self->state[strpid] = st.IsOK() ? self->Valid : self->Missing;
-		std::cout << (st.IsOK() ? "OK for " : "Corrupted ") << self->blkid << "." << strpid << "\n" << std::flush;
 		if(st.IsOK()){
 			self->stripes[strpid].resize(length);
 		}
@@ -199,16 +195,20 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 callback_t RepairTool::read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool) {
 	return [tool, sem, blkid, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		if(sem != nullptr && !st.IsOK()){
+			std::stringstream stream;
 			if(tool->urlmap.find(tool->objcfg.GetFileName(blkid, strpid))!=tool->urlmap.end())
-				std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost: "
+				stream << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost: "
 					<< tool->urlmap[tool->objcfg.GetFileName(blkid, strpid)] << "\n" << std::flush;
-			else std::cout << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost not found\n" << std::flush;
+			else stream << "Corruption in block " << blkid << " and stripe " << strpid << "\nHost not found\n" << std::flush;
+			XrdCl::DefaultEnv::GetLog()->Dump(XrdCl::XRootDMsg, &(stream.str()[0]));
 			tool->st->status = XrdCl::stError;
 		}
 	};
 }
 
 void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
+	auto log = XrdCl::DefaultEnv::GetLog();
+
 	XrdCl::SyncResponseHandler handler1;
 	TryOpen(&handler1, XrdCl::OpenFlags::Read, 0);
 	handler1.WaitForResponse();
@@ -219,7 +219,7 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 		for (; itr != redirectionMap.end(); ++itr)
 		{
 			const std::string &oldUrl = itr->first;
-			std::cout << "Archive contains some damaged metadata: " << oldUrl << "\n" << std::flush;
+			log->Dump(XrdCl::XRootDMsg, "Archive %s contains some damaged metadata", oldUrl);
 			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
 			st->status = XrdCl::stError;
 		}
@@ -260,16 +260,18 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler){
 }
 
 void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler) {
-	std::cout<<"Repair called with " << (int)objcfg.nbchunks << " chunks of which " << (int)objcfg.nbdata << "are data\n"<<std::flush;
+	auto log = XrdCl::DefaultEnv::GetLog();
+	std::stringstream stream;
+	stream<<"Repair called with " << (int)objcfg.nbchunks << " chunks of which " << (int)objcfg.nbdata << "are data\n"<<std::flush;
+
+	log->Debug(XrdCl::XRootDMsg, &(stream.str()[0]));
 
 	XrdCl::SyncResponseHandler handler1;
 	RepairTool::OpenInUpdateMode(&handler1);
 	handler1.WaitForResponse();
 
-	std::cout<<"Opened archives\n"<<std::flush;
-	/*for(auto it = urlmap.begin(); it != urlmap.end(); it++){
-		std::cout << "Map key " << (*it).first << " to " << (*it).second << "\n" << std::flush;
-	}*/
+	log->Debug(XrdCl::XRootDMsg, "Opened archives.");
+
 	checkAfterRepair = checkAgainAfterRepair;
 
 	chunksRepaired.store(0);
@@ -288,7 +290,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	CloseAllArchives(&handlerClose, 0);
 	handlerClose.WaitForResponse();
 
-	std::cout<<"Archives closed\n"<< std::flush;
+	log->Debug(XrdCl::XRootDMsg, "Archives closed.");
 
 	for (size_t i = 0; i < objcfg.plgr.size(); i++)
 	{
@@ -299,22 +301,23 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 	}
 	for (auto it = objcfg.plgr.begin(); it != objcfg.plgr.end(); it++)
 	{
-		std::cout << "Host at " << *it << "\n" << std::flush;
+		log->Debug(XrdCl::XRootDMsg, "Host at %s", *it);
 	}
 	for (auto it = redirectionMap.begin(); it != redirectionMap.end(); it++)
-		std::cout << "Redirect from " << it->first << " to " << it->second
-				<< "\n" << std::flush;
+		log->Debug(XrdCl::XRootDMsg, "Redirect from %s to %s", it->first, it->second);
 
-	std::cout << "\nCHUNKS REPAIRED: " << chunksRepaired.load() << "\n"
-			<< std::flush;
+
+	log->Debug(XrdCl::XRootDMsg, "Chunks repaired: %d", chunksRepaired.load());
 	if (repairFailed)
 	{
-		std::cout << "Repair failed at some point!\n" << std::flush;
+		log->Dump(XrdCl::XRootDMsg, "Repair failed at some point.");
 	}
 
 }
 
 void RepairTool::CheckBlock() {
+	auto log = XrdCl::DefaultEnv::GetLog();
+
 	std::unique_lock<std::mutex> lck(blkmtx);
 	size_t totalBlocks = 0;
 	if (objcfg.nomtfile) {
@@ -327,22 +330,22 @@ void RepairTool::CheckBlock() {
 		if (!block || block->blkid != blkid)
 			block = std::make_shared<block_t>(blkid, reader, objcfg);
 		auto blk = block;
-		// initiates the read for each stripe, at some point CheckBlock will be called again from somewhere else.
+		// initiates the read for each stripe
 		if (!error_correction(blk, this)) {
 			currentBlockChecked.fetch_add(1);
-			//lck.unlock();
-			//CheckBlock();
-			std::cout << "Couldn't restore block " << blkid << "\n" << std::flush;
-		}
+			log->Dump(XrdCl::XRootDMsg, "Couldn't restore block %d.", blkid);
+			}
 	}
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
-	std::cout << "Finished Repair init\n" << std::flush;
+	log->Debug(XrdCl::XRootDMsg, "Repair initialized for all blocks");
 	finishedRepair = true;
 	repairVar.notify_all();
 
 }
 
 XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t strpid){
+	auto log = XrdCl::DefaultEnv::GetLog();
+
 	auto blkid = blk->blkid;
 	std::string fn = objcfg.GetFileName( blkid, strpid );
 
@@ -351,7 +354,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 	auto itr = urlmap.find(fn);
 	if (itr == urlmap.end())
 	{
-		std::cout << "Couldn't locate file " << fn << " for writing\n" << std::flush;
+		log->Dump(XrdCl::XRootDMsg, "Couldn't locate file %s for writing", fn);
 		auto it = redirectionMap.begin();
 		uint32_t u = 0;
 		while(it != redirectionMap.end()){
@@ -361,7 +364,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 		}
 		url = it->first;
 		blk->redirectionIndex++;
-		std::cout << "Replacing it with host " << url << "\n" << std::flush;
+		log->Dump(XrdCl::XRootDMsg, "Replacing it with host %s", url);
 	}
 	else url = itr->second;
 	if(writeDataarchs[url]->IsOpen()){
@@ -382,18 +385,14 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 			if (actualSize < 0)
 				actualSize = 0;
 		}
-		//std::cout << "Actual Write Size: " << actualSize
-		//		<< " because file size is " << filesize << "\n" << std::flush;
-
 		auto pipehndl = [=](const XrdCl::XRootDStatus &st) {
 			// increase the written counter by one (atomic)
 			if(!st.IsOK()){
-				std::cout << "Write to " << url << " failed: " << st.code << "\n" << std::flush;
+				log->Dump(XrdCl::XRootDMsg, "Write to %s failed: %s", url, st.code);
+
 			}
 			std::unique_lock<std::mutex> lk(finishedRepairMutex);
 			chunkRepairsWritten.fetch_add(1);
-
-			std::cout << "Write pipeline ended "<<chunkRepairsWritten.load() << "\n" << std::flush;
 			repairVar.notify_all();
 			    	};
 
@@ -426,8 +425,8 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 	}
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
 	chunkRepairsWritten.fetch_add(1);
-	std::cout << "Write failed, increased counter to "<<chunkRepairsWritten.load() << "\n" << std::flush;
 	repairVar.notify_all();
+	XrdCl::DefaultEnv::GetLog()->Dump(XrdCl::XRootDMsg, "Can't write, archive not open.");
 	return XrdCl::XRootDStatus(XrdCl::stError, "Can't write, archive not open");
 }
 
@@ -492,6 +491,7 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    // First, check the global status, if we are in an error state just
 	    // fail the request.
 	    //-------------------------------------------------------------------------
+	auto log = XrdCl::DefaultEnv::GetLog();
 
 	    const size_t size = objcfg.plgr.size();
 	    //-------------------------------------------------------------------------
@@ -528,7 +528,7 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	        closes.emplace_back( std::move( p ) );
 	      }
 	      else if(writeDataarchs[objcfg.GetDataUrl(i)]->archsize > 0){
-	    	  std::cout<< "Archive " << objcfg.GetDataUrl(i) << " not open but rather " << writeDataarchs[objcfg.GetDataUrl(i)]->openstage << "\n" << std::flush;
+	    	  log->Dump(XrdCl::XRootDMsg, "Archive %s not open but rather %d", objcfg.GetDataUrl(i), writeDataarchs[objcfg.GetDataUrl(i)]->openstage );
 	    	  XrdCl::Pipeline p = XrdCl::SetXAttr( writeDataarchs[objcfg.GetDataUrl(i)]->GetFile(), xav )
 	    	  	                          | XrdCl::CloseArchive( *writeDataarchs[objcfg.GetDataUrl(i)] );
 	    	  closes.emplace_back( std::move( p ) );
@@ -556,13 +556,7 @@ void RepairTool::CloseAllArchives(XrdCl::ResponseHandler *handler, uint16_t time
 	    			auto &zipptr = itr->second;
 	    			auto url = itr->first;
 	    			if(zipptr->archsize > 0 && zipptr->openstage != XrdCl::ZipArchive::None){
-	    				std::cout << "Archive wasn't properly closed: " << url << ", status " << zipptr->openstage << "\n" << std::flush;
-	    				XrdCl::StatInfo* info = new XrdCl::StatInfo();
-	    				XrdCl::XRootDStatus s = zipptr->archive.Stat(false, info);
-	    				if(s.IsOK()){
-	    					std::cout << "File state: " << info->GetFlags();
-	    				}
-	    				else std::cout << "Couldn't stat file\n"<<std::flush;
+	    				log->Dump(XrdCl::XRootDMsg, "Archive wasn't properly closed: %s, status %d", url, zipptr->openstage );
 	    			}
 	    		}
 	    		if (handler)
@@ -651,7 +645,8 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 									}
 									catch (std::invalid_argument&)
 									{
-										std::cout << "Invalid file name detected\n" << std::flush;
+										XrdCl::DefaultEnv::GetLog()->Dump(XrdCl::XRootDMsg, "Invalid file name detected.");
+
 									}
 								}
 							}
@@ -711,8 +706,7 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 								XrdCl::OpenFlags::New
 										| XrdCl::OpenFlags::Write));
 
-				std::cout << "Created new archive pointing from url " << oldUrl
-						<< " to " << newUrl << "\n" << std::flush;
+				XrdCl::DefaultEnv::GetLog()->Debug(XrdCl::XRootDMsg, "Created new archive pointing from url %s to %s", oldUrl, newUrl);
 
 				InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl]);
 
@@ -756,13 +750,12 @@ XrdCl::Pipeline RepairTool::CheckHealthExists(size_t index){
 		  return XrdCl::GetXAttr( readDataarchs[url]->GetFile(), "xrdec.corrupted" ) >>
 	          [index, url, this]( XrdCl::XRootDStatus &st, std::string &damage)
 	          {
-			  //std::cout << "Attempt to read health\n" << std::flush;
 				if (st.IsOK()) {
 					try {
 						int damaged = std::stoi(damage);
 						if (damaged > 0){
 							this->readDataarchs[url]->openstage = XrdCl::ZipArchive::Error;
-							std::cout << "Found corrupted archive\n" << std::flush;
+							XrdCl::DefaultEnv::GetLog()->Dump(XrdCl::XRootDMsg, "Found corrupted archive %s", url);
 						}
 					} catch (std::invalid_argument&) {
 						return;
@@ -818,7 +811,6 @@ void RepairTool::CheckAllMetadata(std::shared_ptr<ThreadEndSemaphore> sem) {
 void RepairTool::InvalidateReplaceArchive(const std::string &url, std::shared_ptr<XrdCl::ZipArchive> zipptr){
 	XrdCl::Pipeline p;
 	if(zipptr->IsOpen()){
-		std::cout << "Closing and invalidating " << url << "\n" << std::flush;
 		std::vector<XrdCl::xattr_t> xav{ {"xrdec.corrupted", std::to_string(1)} };
 		p = XrdCl::SetXAttr( zipptr->archive, xav )
 		                          | XrdCl::CloseArchive( *zipptr);
@@ -871,7 +863,7 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 		return;
 	}
 
-	//- objcfg.chunksize;
+
 	std::shared_ptr<buffer_t> lfhbuf;
 	lfhbuf = std::make_shared<buffer_t>();
 	lfhbuf->reserve(readSize);
@@ -899,7 +891,6 @@ void RepairTool::CompareLFHToCDFH(std::shared_ptr<ThreadEndSemaphore> sem, uint1
 						// All is good
 						//---------------------------------------------------
 						else {
-							//std::cout << "Header checked " << fn << "\n" << std::flush;
 							return;
 						}
 					} catch (const std::exception &e) {
@@ -929,8 +920,7 @@ void RepairTool::ReplaceURL(const std::string &url){
 			redirectionMap[url] = replacementPlgr;
 			currentReplaceIndex++;
 		}else{
-			// TODO: throw error if there's no new url
-			std::cout << "Critical error, can't find replacement host for " << url << "\n" << std::flush;
+			XrdCl::DefaultEnv::GetLog()->Dump(XrdCl::XRootDMsg,"Critical error, can't find replacement host for %s", url );
 			redirectionMap[url] = "null";
 		}
 	urlMutex.unlock();
