@@ -264,8 +264,6 @@ namespace XrdEc
     auto itr = urlmap.find( fn );
     if( itr == urlmap.end() )
     {
-      //auto st = !IsMissing( fn ) ? XrdCl::XRootDStatus() :
-      //          XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
     	auto st = XrdCl::XRootDStatus( XrdCl::stError, XrdCl::errNotFound );
     	ThreadPool::Instance().Execute( cb, st, 0 );
       return;
@@ -305,7 +303,6 @@ namespace XrdEc
 							// Get the checksum for the read data
 							//---------------------------------------------------
 							uint32_t orgcksum = 0;
-							//auto s = zipptr->GetCRC32( fn, orgcksum );
 							auto s = zipptr->GetCRC32(fn, orgcksum);
 							//---------------------------------------------------
 							// If we cannot extract the checksum assume the data
