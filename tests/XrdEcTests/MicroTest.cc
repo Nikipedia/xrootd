@@ -428,7 +428,7 @@ void MicroTest::InitRepair( bool usecrc32c )
   CPPUNIT_ASSERT( mkdir( datadir.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
   // create a directory for each stripe
   //size_t nbstrps = objcfg->nbdata + 2 * objcfg->nbparity;
-  size_t nbstrps = objcfg->nbdata + objcfg->nbparity;
+  size_t nbstrps = objcfg->nbdata + 2* objcfg->nbparity;
   for( size_t i = 0; i < nbstrps; ++i )
   {
     std::stringstream ss;
@@ -491,7 +491,7 @@ void MicroTest::CorruptChunk( size_t blknb, size_t strpnb )
 
 void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 	static std::default_random_engine random_engine(seed);
-	std::uniform_int_distribution<uint32_t> hostToCorrupt(0, nbdata+nbparity-1);
+	std::uniform_int_distribution<uint32_t> hostToCorrupt(0, objcfg->plgr.size()-1);
 	std::vector<uint64_t> hosts;
 	std::vector<uint64_t> maxCorruptSizes;
 	for(size_t i = 0; i < numCorruptions; i++){
@@ -506,10 +506,12 @@ void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 	XrdCl::XRootDStatus *status = handler1.GetStatus();
 	CPPUNIT_ASSERT_XRDST(*status);
 	delete status;
-	for(size_t h = 0; h < nbdata+nbparity; h++){
+	std::cout << "Reader opened\n" << std::flush;
+	for(size_t h = 0; h < objcfg->plgr.size(); h++){
 			// get the CD buffer
 			std::string url = objcfg->GetDataUrl(h);
 			auto zipptr = reader.dataarchs[url];
+			if(zipptr->archsize > 0){
 			uint64_t cdOffset =
 					zipptr->zip64eocd ?
 							zipptr->zip64eocd->cdOffset : zipptr->eocd->cdOffset;
@@ -517,7 +519,10 @@ void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 			uint64_t eocdLength = XrdZip::EOCD::eocdBaseSize;
 
 			maxCorruptSizes.emplace_back(cdOffset + cdLength + eocdLength);
+			}
+			else maxCorruptSizes.emplace_back(0);
 	}
+	std::cout << "Max sizes determined\n" << std::flush;
 	// close the data object
 	XrdCl::SyncResponseHandler handler2;
 	reader.Close(&handler2);
@@ -527,6 +532,11 @@ void MicroTest::CorruptRandom(uint64_t seed, uint32_t numCorruptions){
 	delete status;
 
 	for(size_t i = 0; i < numCorruptions; i++){
+		if(maxCorruptSizes[hosts[i]]== 0) {
+					hosts[i] = (hosts[i] + 1) % objcfg->plgr.size();
+					i--;
+					continue;
+				}
 		std::string url = objcfg->GetDataUrl(hosts[i]);
 		std::stringstream ss;
 		ss << "cp " << url << " " << url << "_noncorrupt";
