@@ -49,8 +49,6 @@
 #include <numeric>
 #include <tuple>
 
-#include <iostream>
-
 class MicroTest;
 
 namespace XrdEc
