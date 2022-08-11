@@ -783,7 +783,8 @@ void RepairTool::OpenInUpdateMode(XrdCl::ResponseHandler *handler,
 			return;
 		}
 	}
-	else if (handler)
+	// we only fall through to this if the handler status is not okay or no redirection is necessary
+	if (handler)
 	{
 		handler->HandleResponse(new XrdCl::XRootDStatus(*handler1.GetStatus()), nullptr);
 	}
