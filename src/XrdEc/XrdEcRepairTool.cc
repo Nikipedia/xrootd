@@ -401,7 +401,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 		auto pipehndl = [=](const XrdCl::XRootDStatus &st) {
 			// increase the written counter by one (atomic)
 			if(!st.IsOK()){
-				log->Dump(XrdCl::XRootDMsg, "Write to %s failed: %s", url, st.code);
+				log->Dump(XrdCl::XRootDMsg, "Write to %s failed: %d", url, st.code);
 
 			}
 			std::unique_lock<std::mutex> lk(finishedRepairMutex);
@@ -417,7 +417,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 			ss << "cp " << url << " " << url<< strpid;
 			std::string s = ss.str();
 			system(s.data());
-			//return writeDataarchs[url]->WriteFileInto(fn, offset, actualSize, chksum, &(blk->stripes[strpid][0]), nullptr, 0);
+
 			XrdCl::Pipeline p = XrdCl::WriteIntoFile(XrdCl::Ctx<XrdCl::ZipArchive>(*writeDataarchs[url]),
 					fn, offset, actualSize, chksum, &(blk->stripes[strpid][0]), 0)
 							| XrdCl::Final(pipehndl);
@@ -641,13 +641,19 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 	auto pipehndl =
 			[=](const XrdCl::XRootDStatus &st)
 			{ // set the central directories in ZIP archives (if we use metadata files)
+						if (handler && userBlocked->load())
+						{
+							handler->HandleResponse(new XrdCl::XRootDStatus(XrdCl::stError, "One or more archives blocked by read requests"), nullptr);
+							return;
+						}
 						auto itr = readDataarchs.begin();
 						for (; itr != readDataarchs.end(); ++itr)
 						{
 							const std::string &url = itr->first;
 							auto &zipptr = itr->second;
-							if (zipptr->archsize == 0)
+							if (zipptr->openstage == XrdCl::ZipArchive::Done && zipptr->archsize == 0)
 								continue;
+							// this only happens for mtfiles
 							if (zipptr->openstage == XrdCl::ZipArchive::NotParsed)
 								zipptr->SetCD(metadata[url]);
 							else if (zipptr->openstage != XrdCl::ZipArchive::Done)
@@ -666,7 +672,7 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 										size_t blknb = fntoblk(itr->first);
 										urlmap.emplace(itr->first, url);
 										if (blknb > lstblk)
-										lstblk = blknb;
+											lstblk = blknb;
 									}
 									catch (std::invalid_argument&)
 									{
@@ -687,10 +693,7 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 						// call user handler
 						if (handler)
 						{
-							if(userBlocked->load())
-								handler->HandleResponse(new XrdCl::XRootDStatus(XrdCl::stError, "One or more archives blocked by read requests"), nullptr);
-							else
-								handler->HandleResponse(new XrdCl::XRootDStatus(st), nullptr);
+							handler->HandleResponse(new XrdCl::XRootDStatus(st), nullptr);
 						}
 					};
 	// in parallel open the data files and read the metadata
