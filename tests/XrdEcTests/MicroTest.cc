@@ -72,6 +72,7 @@ class MicroTest: public CppUnit::TestCase
       CPPUNIT_TEST( RepairNoCorruptionTest );
       CPPUNIT_TEST( RandomizedDoubleRepairTest );
       CPPUNIT_TEST( RepairFailsTest );
+      CPPUNIT_TEST( RepairBlockedTest );
     CPPUNIT_TEST_SUITE_END();
 
     int testedChunkCount;
@@ -151,12 +152,25 @@ class MicroTest: public CppUnit::TestCase
 
     	Verify(false);
 
+    	Reader reader(*objcfg);
+
     	switch(corruptionType){
     	case 0: UrlNotReachable(4); break;
     	case 1: CorruptChunk(1,1); break;
     	case 2: CorruptRandom(seed2, 1); break;
     	case 3: CorruptRandom(seed2, 2); break;
     	case 4: CorruptChunk(0, 0); CorruptChunk(0, 1); CorruptChunk(0,2); break;
+    	// block mutex, open archive, the new thread will wait for unlock.
+		case 5:{
+			// open the data object
+			XrdCl::SyncResponseHandler handler1;
+			reader.Open(&handler1);
+			handler1.WaitForResponse();
+			XrdCl::XRootDStatus *status = handler1.GetStatus();
+			CPPUNIT_ASSERT_XRDST(*status);
+			delete status;
+			std::cout << "Archive opened\n" << std::flush;
+			break;}
     	default: break;
     	}
     	if(mustHaveErrors)
@@ -164,8 +178,10 @@ class MicroTest: public CppUnit::TestCase
 
     	auto oldPlgr = std::vector<std::string>(objcfg->plgr);
 
+    	XrdCl::SyncResponseHandler handler2;
 		XrdEc::RepairTool r(*objcfg);
-		r.RepairFile(false, nullptr);
+		r.RepairFile(false, &handler2);
+		handler2.WaitForResponse();
 		if(!repairFails){
 			if(mustHaveErrors)
 				CPPUNIT_ASSERT(r.chunksRepaired > 0);
@@ -179,6 +195,16 @@ class MicroTest: public CppUnit::TestCase
 			// have to set the plgr to the old one so the archives are deleted from disk correctly
 			objcfg->plgr = oldPlgr;
 			UrlReachable(4);
+		}
+		else if(corruptionType == 5){
+			// we only unlock here so our repair fails.
+			// close the data object
+			XrdCl::SyncResponseHandler handler3;
+			reader.Close(&handler3);
+			handler3.WaitForResponse();
+			XrdCl::XRootDStatus *status2 = handler3.GetStatus();
+			CPPUNIT_ASSERT_XRDST(*status2);
+			delete status2;
 		}
 		CleanUp();
     }
@@ -205,6 +231,10 @@ class MicroTest: public CppUnit::TestCase
 
     inline void RepairFailsTest(){
     	AlignedRepairTestImpl(true, 4, true, true);
+    }
+
+    inline void RepairBlockedTest(){
+    	AlignedRepairTestImpl(true, 5, false, true);
     }
 
     inline void AlignedWrite1MissingTestImpl( bool usecrc32c )
@@ -376,6 +406,8 @@ class MicroTest: public CppUnit::TestCase
     uint32_t randomSeed;
 
     std::vector<char> rawdata;
+
+    std::mutex accessMutex;
 };
 
 CPPUNIT_TEST_SUITE_REGISTRATION( MicroTest );
@@ -433,7 +465,6 @@ void MicroTest::InitRepair( bool usecrc32c )
 	  CPPUNIT_ASSERT( mkdir( strp.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH ) == 0 );
   }
 }
-
 
 void MicroTest::CorruptChunk( size_t blknb, size_t strpnb )
 {

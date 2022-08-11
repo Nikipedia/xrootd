@@ -50,6 +50,7 @@
 #include <numeric>
 #include <tuple>
 #include <fstream>
+#include <iostream>
 
 namespace XrdEc {
 
@@ -170,7 +171,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
 //-----------------------------------------------------------------------
 callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairTool *tool,
 		size_t strpid, uint16_t timeout) {
-	return [self, tool, strpid](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
+	return [self, tool, strpid, timeout](const XrdCl::XRootDStatus &st, const uint32_t &length) mutable {
 		std::unique_lock<std::mutex> lck(tool->blkmtx);
 		self->state[strpid] = st.IsOK() ? self->Valid : self->Missing;
 		if(st.IsOK()){
@@ -272,6 +273,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 	if(!handler1.GetStatus()->IsOK())
 	{
+		repairFailed = true;
 		log->Dump(XrdCl::XRootDMsg, "Open failed");
 		if(handler)
 			handler->HandleResponse(handler1.GetStatus(), nullptr);
@@ -603,8 +605,8 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 	opens.reserve(size);
 	std::vector<XrdCl::Pipeline> healthRead;
 	healthRead.reserve(size);
-	std::atomic<bool> userBlocked;
-	userBlocked.store(false);
+	std::shared_ptr<std::atomic<bool>> userBlocked = std::make_shared<std::atomic<bool>>();
+	userBlocked->store(false);
 	for (size_t i = 0; i < size; ++i)
 	{
 		// generate the URL
@@ -619,11 +621,14 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 		{
 			opens.emplace_back(
 					XrdCl::OpenArchive(*readDataarchs[url], url,
-							flags) >> [=](XrdCl::XRootDStatus &st)
+							flags) >> [userBlocked](XrdCl::XRootDStatus &st)
 			{
+				std::cout << "Opened archive\n" << std::flush;
 				// if some user currently reads from that archive, TODO: Which code?
-				if(!st.IsOK() && st.code == XrdCl::errAuthFailed){
-					userBlocked.store(true);
+				if(!st.IsOK() ){
+					std::cout << "Open error code: " << st.code << "\n" << std::flush;
+					//if(st.code == XrdCl::errAuthFailed)
+					userBlocked->store(true);
 				}
 			}
 			);
@@ -682,7 +687,7 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 						// call user handler
 						if (handler)
 						{
-							if(userBlocked.load())
+							if(userBlocked->load())
 								handler->HandleResponse(new XrdCl::XRootDStatus(XrdCl::stError, "One or more archives blocked by read requests"), nullptr);
 							else
 								handler->HandleResponse(new XrdCl::XRootDStatus(st), nullptr);
