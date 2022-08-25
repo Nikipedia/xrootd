@@ -70,11 +70,31 @@ public:
 	}
 	virtual ~RepairTool() {
 	}
+	/*
+	 * Repairs the file specified in the objcfg by overwriting or writing to a new host
+	 * Specify replacementPlgr in the objcfg!
+	 */
 	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
+	/*
+	 * Checks the file specified in the objcfg
+	 * Specify replacementPlgr in the objcfg even though they won't be written to.
+	 */
 	void CheckFile(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
+	/*
+	 * The number of blocks that have read all of their stripes but possibly not written to disk yet
+	 */
 	std::atomic<uint32_t> currentBlockChecked;
+	/*
+	 * amount of chunks that have to be overwritten or rewritten
+	 */
 	std::atomic<uint64_t> chunksRepaired;
+	/*
+	 * number of chunk writes that have terminated successfully.
+	 */
 	std::atomic<uint64_t> chunkRepairsWritten;
+	/*
+	 * Did the repair fail at some point (e.g. non restorable stripe)
+	 */
 	bool repairFailed;
 private:
 
@@ -223,13 +243,31 @@ private:
 
 	XrdCl::XRootDStatus* st;
 
+	/*
+	 * The mutex for access to the finishedRepair variable and the condition variable
+	 */
 	std::mutex finishedRepairMutex;
+	/*
+	 * Locked by finishedRepirMutex and waits until finishedRepair and written == demanded and blocksChecked == totalBlocks
+	 */
 	std::condition_variable repairVar;
+	/*
+	 * Indicates that all block repair have been initialized
+	 */
 	bool finishedRepair;
 
+	/*
+	 * If true, check the whole file again after repair to confirm everything was written successfully and correctly
+	 */
 	bool checkAfterRepair;
 
+	/*
+	 * Limits the number of buffers for the check file function
+	 */
 	uint16_t bufferLimit;
+	/*
+	 * current amount of buffers in checkFile
+	 */
 	uint16_t currentBuffers;
 	std::mutex bufferCountMutex;
 	std::condition_variable waitBuffers;

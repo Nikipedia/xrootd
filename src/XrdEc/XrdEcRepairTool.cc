@@ -231,6 +231,9 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler, uint16_t timeout){
 			InvalidateReplaceArchive(oldUrl, readDataarchs[oldUrl], timeout);
 			st->status = XrdCl::stError;
 		}
+		if(redirectionMap.size() > objcfg.nbparity){
+			log->Error(XrdCl::XRootDMsg, "NOT RECOVERABLE: Too many archives are damaged");
+		}
 	}
 	// do the read for each strpid and blkid but with different callback func
 	uint64_t numBlocks = ceil((filesize / (float) objcfg.chunksize) / objcfg.nbdata);
@@ -259,6 +262,7 @@ void RepairTool::CheckFile(XrdCl::ResponseHandler *handler, uint16_t timeout){
 		}
 	}
 	sem->Wait();
+	// just to reuse CloseAllArchives
 	for(size_t u = 0; u < objcfg.plgr.size(); u++){
 		writeDataarchs[objcfg.GetDataUrl(u)]= readDataarchs[objcfg.GetDataUrl(u)];
 	}
