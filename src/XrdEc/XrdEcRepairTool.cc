@@ -29,6 +29,7 @@
 #include "XrdEc/XrdEcConfig.hh"
 #include "XrdEc/XrdEcObjCfg.hh"
 #include "XrdEc/XrdEcThreadPool.hh"
+#include "XrdEc/XrdEcBlkPool.hh"
 
 #include "XrdZip/XrdZipLFH.hh"
 #include "XrdZip/XrdZipCDFH.hh"
@@ -131,7 +132,7 @@ bool RepairTool::error_correction( std::shared_ptr<block_t> &self, RepairTool *w
       {
         if( self->state[strpid] != block_t::Recovering ) continue;
         // we expect one more repair/write
-        writer->chunksRepaired.fetch_add(1);
+        writer->chunksRepaired.fetch_add(1,std::memory_order_relaxed);
         // Write new content to disk
         auto st = writer->WriteChunk(self, strpid, timeout);
         if(!st.IsOK()){
@@ -183,7 +184,8 @@ callback_t RepairTool::update_callback(std::shared_ptr<block_t> &self, RepairToo
 		// the current stripe, or any other stripe)
 		//------------------------------------------------------------
 		if(!error_correction(self, tool, timeout)){
-			tool->currentBlockChecked.fetch_add(1);
+			tool->currentBlockChecked.fetch_add(1, std::memory_order_relaxed);
+			BlockPool::Instance().Recycle(std::move(self));
 			tool->repairVar.notify_all();
 			lck.unlock();
 			//tool->CheckBlock();
@@ -285,8 +287,8 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 	checkAfterRepair = checkAgainAfterRepair;
 
-	chunksRepaired.store(0);
-	currentBlockChecked.store(0);
+	chunksRepaired.store(0, std::memory_order_relaxed);
+	currentBlockChecked.store(0, std::memory_order_relaxed);
 	// last blk is the index of the last (e.g. index 3 means we have 4 blocks -> currentBlockChecked must be 4 at the end)
 	uint32_t totalBlocks = lstblk + 1;
 	repairFailed = false;
@@ -294,7 +296,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 
 	CheckBlock(timeout);
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
-	repairVar.wait(lk, [this, totalBlocks]{return this->finishedRepair && this->chunkRepairsWritten.load() == this->chunksRepaired.load() && this->currentBlockChecked.load() == totalBlocks;});
+	repairVar.wait(lk, [this, totalBlocks]{return this->finishedRepair && this->chunkRepairsWritten.load(std::memory_order_relaxed) == this->chunksRepaired.load(std::memory_order_relaxed) && this->currentBlockChecked.load(std::memory_order_relaxed) == totalBlocks;});
 	lk.unlock();
 
 	XrdCl::SyncResponseHandler handlerClose;
@@ -318,7 +320,7 @@ void RepairTool::RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *
 		log->Debug(XrdCl::XRootDMsg, "Redirect from %s to %s", it->first, it->second);
 
 
-	log->Debug(XrdCl::XRootDMsg, "Chunks repaired: %d", chunksRepaired.load());
+	log->Debug(XrdCl::XRootDMsg, "Chunks repaired: %d", chunksRepaired.load(std::memory_order_relaxed));
 	if (repairFailed)
 	{
 		log->Error(XrdCl::XRootDMsg, "Repair failed at some point.");
@@ -343,11 +345,12 @@ void RepairTool::CheckBlock(uint16_t timeout) {
 	//size_t blkid = currentBlockChecked;
 	for (size_t blkid = 0; blkid < totalBlocks; blkid++) {
 		if (!block || block->blkid != blkid)
-			block = std::make_shared<block_t>(blkid, reader, objcfg);
+			//block = std::make_shared<block_t>(blkid, reader, objcfg);
+			block = BlockPool::Instance().Create(objcfg, reader, blkid);
 		auto blk = block;
 		// initiates the read for each stripe
 		if (!error_correction(blk, this, timeout)) {
-			currentBlockChecked.fetch_add(1);
+			currentBlockChecked.fetch_add(1,std::memory_order_relaxed);
 			log->Error(XrdCl::XRootDMsg, "Couldn't restore block %d.", blkid);
 			}
 	}
@@ -407,7 +410,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 
 			}
 			std::unique_lock<std::mutex> lk(finishedRepairMutex);
-			chunkRepairsWritten.fetch_add(1);
+			chunkRepairsWritten.fetch_add(1,std::memory_order_relaxed);
 			repairVar.notify_all();
 			    	};
 		log->Debug(XrdCl::XRootDMsg, "Writing with size %d", actualSize);
@@ -439,7 +442,7 @@ XrdCl::XRootDStatus RepairTool::WriteChunk(std::shared_ptr<block_t> blk, size_t 
 		}
 	}
 	std::unique_lock<std::mutex> lk(finishedRepairMutex);
-	chunkRepairsWritten.fetch_add(1);
+	chunkRepairsWritten.fetch_add(1,std::memory_order_relaxed);
 	repairVar.notify_all();
 	XrdCl::DefaultEnv::GetLog()->Error(XrdCl::XRootDMsg, "Can't write, archive not open.");
 	return XrdCl::XRootDStatus(XrdCl::stError, "Can't write, archive not open");
@@ -608,7 +611,7 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 	std::vector<XrdCl::Pipeline> healthRead;
 	healthRead.reserve(size);
 	std::shared_ptr<std::atomic<bool>> userBlocked = std::make_shared<std::atomic<bool>>();
-	userBlocked->store(false);
+	userBlocked->store(false, std::memory_order_relaxed);
 	for (size_t i = 0; i < size; ++i)
 	{
 		// generate the URL
@@ -624,14 +627,14 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 			opens.emplace_back(
 					XrdCl::OpenArchive(*readDataarchs[url], url, flags)
 
-					/*>> [userBlocked](const XrdCl::XRootDStatus &st)
+					>> [userBlocked](const XrdCl::XRootDStatus &st)
 					{
 						// if some user currently reads from that archive, TODO: Which code?
 							if(!st.IsOK())
 							{
 								if(st.errNo == XErrorCode::kXR_FileLocked)
 								{
-									userBlocked->store(true);
+									userBlocked->store(true, std::memory_order_relaxed);
 									std::stringstream ss;
 									XrdCl::DefaultEnv::GetLog()->Error(XrdCl::XRootDMsg, "File is locked");
 								}
@@ -642,7 +645,7 @@ void RepairTool::TryOpen(XrdCl::ResponseHandler *handler, XrdCl::OpenFlags::Flag
 									XrdCl::DefaultEnv::GetLog()->Error(XrdCl::XRootDMsg, &(ss.str()[0]));
 								}
 							}
-						}*/
+						}
 								);
 		}
 		else
