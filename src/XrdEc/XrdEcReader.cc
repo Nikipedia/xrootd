@@ -51,13 +51,9 @@
 #include <iterator>
 #include <numeric>
 #include <tuple>
-<<<<<<< HEAD
+
 #include <set>
 
-||||||| parent of dab70be3a (Further cleanup)
-#include <iostream>
-=======
->>>>>>> dab70be3a (Further cleanup)
 
 namespace XrdEc
 {
