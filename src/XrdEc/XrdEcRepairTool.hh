@@ -56,19 +56,35 @@ class RepairTool {
 
 public:
 	RepairTool(ObjCfg &objcfg, uint16_t _bufferLimit = 512) :
-			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0)
-			{
+			objcfg(objcfg), reader(objcfg), lstblk(0), filesize(0),
+			checkAfterRepair(false){
+		currentBlockChecked.store(0);
 		currentReplaceIndex = 0;
+		chunksRepaired.store(0);
+		repairFailed = false;
+		finishedRepair = false;
+		chunkRepairsWritten.store(0);
 		bufferLimit = _bufferLimit;
 		currentBuffers = 0;
 		st = nullptr;
 	}
 	virtual ~RepairTool() {
 	}
+	void RepairFile(bool checkAgainAfterRepair, XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
 	void CheckFile(XrdCl::ResponseHandler *handler, uint16_t timeout = 0);
-
-
+	std::atomic<uint32_t> currentBlockChecked;
+	std::atomic<uint64_t> chunksRepaired;
+	std::atomic<uint64_t> chunkRepairsWritten;
+	bool repairFailed;
 private:
+
+	/**
+	 * Initializes read/write Dataarchs, opens them and checks whether any need to be replaced.
+	 * @param handler
+	 * @param timeout
+	 */
+	void OpenInUpdateMode(XrdCl::ResponseHandler *handler,
+				uint16_t timeout = 0);
 	/**
 	 * Opens read Dataarchs and fills the redirection map, but doesn't create writeDataarchs yet.
 	 * @param handler
@@ -117,6 +133,16 @@ private:
 	 */
 	void ReplaceURL(const std::string &url);
 
+    //-----------------------------------------------------------------------
+    //! Checks the block at currentBlockIndex and executes error correction
+    //-----------------------------------------------------------------------
+	void CheckBlock(uint16_t timeout);
+	/**
+	 * Checks all stripes of the current block. Returns false if the block is finished (in positive or negative way).
+	 * @param self
+	 * @param writer
+	 * @return
+	 */
 	static bool error_correction( std::shared_ptr<block_t> &self, RepairTool *writer, uint16_t timeout );
     /**
      * Initiates the actual read from disk, calls update_callback afterwards
@@ -129,6 +155,14 @@ private:
      */
 	void Read( size_t blknb, size_t strpnb, buffer_t &buffer, callback_t cb, uint16_t timeout = 0);
 	/**
+	 * Sets the state of the stripe we read to okay or missing and calls error correction again.
+	 * @param self
+	 * @param tool
+	 * @param strpid
+	 * @return
+	 */
+	static callback_t update_callback(std::shared_ptr<block_t> &self, RepairTool *tool, size_t strpid, uint16_t timeout);
+	/**
 	 * Used for CheckFile: If the read was unsuccessful due to corrupted data (checksum violation) message the user.
 	 * @param self
 	 * @param tool
@@ -136,6 +170,13 @@ private:
 	 * @return
 	 */
 	static callback_t read_callback(std::shared_ptr<ThreadEndSemaphore> sem, size_t blkid, size_t strpid, RepairTool *tool);
+	/**
+	 * Writes the content of the stripe to its corresponding writeDataarch by writing into or appending.
+	 * @param blk
+	 * @param strpid
+	 * @return
+	 */
+	XrdCl::XRootDStatus WriteChunk(std::shared_ptr<block_t> blk, size_t strpid, uint16_t timeout);
 
 	/**
 	 * Closes all archives in writeDataarchs and sets their corrupted flag to 0.
@@ -181,6 +222,13 @@ private:
 	std::mutex urlMutex;
 
 	XrdCl::XRootDStatus* st;
+
+	std::mutex finishedRepairMutex;
+	std::condition_variable repairVar;
+	bool finishedRepair;
+
+	bool checkAfterRepair;
+
 	uint16_t bufferLimit;
 	uint16_t currentBuffers;
 	std::mutex bufferCountMutex;
